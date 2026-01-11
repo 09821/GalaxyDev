@@ -1,0 +1,666 @@
+-- GALAXYHUB TP SYSTEM - SCRIPT COMPLETO
+-- Sistema avançado de teleporte e movimento
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local StarterGui = game:GetService("StarterGui")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+-- Variáveis Globais
+local MarkedPositions = {}
+local SpawnPosition = nil
+local TeleguiadoEnabled = false
+local TPTeleguiadoEnabled = false
+local TPInstantEnabled = false
+local SuperBoostEnabled = false
+local InfinitJumpEnabled = false
+local AutoDisableTP = false
+
+local FloatPlatforms = {}
+local CurrentPlatform = nil
+
+local FLOAT_SPEED = 26.5
+local BOOST_SPEED = 37
+local BOOST_JUMP = 150
+
+-- PROTEÇÕES GLOBAIS
+
+-- Anti-Ragdoll (Remove ragdoll do cliente)
+local function antiRagdoll()
+    local char = LocalPlayer.Character
+    if not char then return end
+    
+    -- Remover constraints de ragdoll
+    for _, obj in pairs(char:GetDescendants()) do
+        if obj:IsA("BallSocketConstraint") or obj:IsA("HingeConstraint") or 
+           obj:IsA("NoCollisionConstraint") or obj.Name == "RagdollConstraint" then
+            obj:Destroy()
+        end
+    end
+    
+    local humanoid = char:FindFirstChild("Humanoid")
+    if humanoid then
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+    end
+end
+
+-- Anti-Kick (Proteção contra kicks do servidor)
+local function setupAntiKick()
+    local mt = getrawmetatable(game)
+    local oldNamecall = mt.__namecall
+    
+    setreadonly(mt, false)
+    
+    mt.__namecall = newcclosure(function(self, ...)
+        local args = {...}
+        local method = getnamecallmethod()
+        
+        -- Bloquear kicks comuns
+        if method == "Kick" then
+            return
+        end
+        
+        -- Bloquear teleport forçado pra fora do jogo
+        if method == "TeleportToPlaceInstance" or method == "Teleport" then
+            return
+        end
+        
+        return oldNamecall(self, ...)
+    end)
+    
+    setreadonly(mt, true)
+    
+    -- Proteção adicional contra LocalScript.Disabled
+    for _, script in pairs(LocalPlayer:GetDescendants()) do
+        if script:IsA("LocalScript") then
+            pcall(function()
+                script.Disabled = false
+            end)
+        end
+    end
+end
+
+-- Executar anti-kick
+pcall(setupAntiKick)
+
+-- Detectar spawn inicial
+if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+    SpawnPosition = LocalPlayer.Character.HumanoidRootPart.Position
+end
+
+-- Função de notificação
+local function notify(title, text, duration)
+    StarterGui:SetCore("SendNotification", {
+        Title = title;
+        Text = text;
+        Duration = duration or 3;
+    })
+end
+
+-- Criar plataforma temporária
+local function createPlatform(position, lifetime, fadeTime)
+    local platform = Instance.new("Part")
+    platform.Size = Vector3.new(6, 0.5, 6)
+    platform.Position = position
+    platform.Anchored = true
+    platform.CanCollide = true
+    platform.Material = Enum.Material.Neon
+    platform.BrickColor = BrickColor.new("Bright blue")
+    platform.Transparency = 0.3
+    platform.Parent = workspace
+    
+    table.insert(FloatPlatforms, platform)
+    
+    -- Remover após lifetime
+    spawn(function()
+        wait(lifetime)
+        -- Fade out
+        local tween = TweenService:Create(platform, TweenInfo.new(fadeTime), {Transparency = 1})
+        tween:Play()
+        tween.Completed:Wait()
+        platform:Destroy()
+        
+        for i, plat in pairs(FloatPlatforms) do
+            if plat == platform then
+                table.remove(FloatPlatforms, i)
+                break
+            end
+        end
+    end)
+    
+    return platform
+end
+
+-- Sistema de flutuação - MELHORADO
+local platformUpdateTime = 0
+local function floatPlayer()
+    local char = LocalPlayer.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+    
+    local hrp = char.HumanoidRootPart
+    local humanoid = char:FindFirstChild("Humanoid")
+    
+    if not humanoid then return end
+    
+    -- Efeito de queda suave (como se estivesse caindo devagar)
+    hrp.Velocity = Vector3.new(hrp.Velocity.X, -2, hrp.Velocity.Z)
+    
+    -- Criar/atualizar plataforma que SEGUE o jogador
+    local currentTime = tick()
+    if currentTime - platformUpdateTime > 0.1 then
+        platformUpdateTime = currentTime
+        
+        if not CurrentPlatform or not CurrentPlatform.Parent then
+            CurrentPlatform = createPlatform(hrp.Position - Vector3.new(0, 3, 0), 4, 7)
+        else
+            -- Plataforma segue suavemente
+            CurrentPlatform.CFrame = CurrentPlatform.CFrame:Lerp(
+                CFrame.new(hrp.Position - Vector3.new(0, 3, 0)),
+                0.5
+            )
+        end
+    end
+    
+    -- Movimento baseado na câmera (Teleguiado) - MELHORADO
+    if TeleguiadoEnabled then
+        local moveDirection = Camera.CFrame.LookVector
+        local newVelocity = moveDirection * FLOAT_SPEED
+        
+        -- Manter queda suave enquanto move
+        hrp.Velocity = Vector3.new(newVelocity.X, -2, newVelocity.Z)
+        hrp.RotVelocity = Vector3.new(0, 0, 0)
+    end
+end
+
+-- Sistema TP Teleguiado - MELHORADO
+local currentPositionIndex = 5
+local tpPlatformUpdateTime = 0
+local function tpTeleguiado()
+    if #MarkedPositions == 0 then return end
+    
+    local char = LocalPlayer.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+    
+    local hrp = char.HumanoidRootPart
+    
+    -- Ir para posição atual
+    local targetPos = MarkedPositions[currentPositionIndex]
+    if not targetPos then
+        currentPositionIndex = 5
+        targetPos = MarkedPositions[currentPositionIndex]
+        if not targetPos then return end
+    end
+    
+    local distance = (hrp.Position - targetPos).Magnitude
+    
+    if distance < 5 then
+        -- Próxima posição
+        currentPositionIndex = currentPositionIndex - 1
+        if currentPositionIndex < 1 then
+            if AutoDisableTP then
+                TPTeleguiadoEnabled = false
+                notify("✅ TP Completo", "Chegou na posição 1!", 3)
+                return
+            else
+                currentPositionIndex = 5
+            end
+        end
+    else
+        -- Mover em direção ao alvo com queda suave
+        local direction = (targetPos - hrp.Position).Unit
+        local moveVelocity = direction * FLOAT_SPEED
+        
+        hrp.Velocity = Vector3.new(moveVelocity.X, -2, moveVelocity.Z)
+        hrp.RotVelocity = Vector3.new(0, 0, 0)
+        
+        -- Criar/atualizar plataforma que SEGUE
+        local currentTime = tick()
+        if currentTime - tpPlatformUpdateTime > 0.1 then
+            tpPlatformUpdateTime = currentTime
+            
+            if not CurrentPlatform or not CurrentPlatform.Parent then
+                CurrentPlatform = createPlatform(hrp.Position - Vector3.new(0, 3, 0), 4, 9)
+            else
+                -- Plataforma segue suavemente
+                CurrentPlatform.CFrame = CurrentPlatform.CFrame:Lerp(
+                    CFrame.new(hrp.Position - Vector3.new(0, 3, 0)),
+                    0.5
+                )
+            end
+        end
+    end
+end
+
+-- TP Instantâneo (3 métodos combinados) - CORRIGIDO
+local function tpInstant()
+    if #MarkedPositions == 0 then
+        notify("❌ Erro", "Nenhuma posição marcada!", 3)
+        return
+    end
+    
+    local char = LocalPlayer.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+    
+    local hrp = char.HumanoidRootPart
+    local humanoid = char:FindFirstChild("Humanoid")
+    
+    -- Anti-Ragdoll durante TP
+    local ragdollConnection
+    if humanoid then
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+    end
+    
+    -- Remover ragdoll existente
+    for _, obj in pairs(char:GetDescendants()) do
+        if obj:IsA("BallSocketConstraint") or obj:IsA("HingeConstraint") or obj:IsA("NoCollisionConstraint") then
+            obj:Destroy()
+        end
+    end
+    
+    -- Percorrer posições de 5 até 1
+    for i = 5, 1, -1 do
+        if MarkedPositions[i] then
+            local targetPos = MarkedPositions[i]
+            
+            -- Método 1: Network Ownership
+            pcall(function()
+                hrp:SetNetworkOwner(LocalPlayer)
+            end)
+            
+            -- Método 2: Quantum Hop (micro-teleports) - CORRIGIDO
+            local steps = 15
+            local startPos = hrp.Position
+            
+            for step = 1, steps do
+                if not char.Parent or not hrp.Parent then break end
+                
+                local progress = step / steps
+                local newPos = startPos:Lerp(targetPos, progress)
+                
+                -- Método 3: CFrame com proteção
+                pcall(function()
+                    hrp.CFrame = CFrame.new(newPos)
+                    hrp.Velocity = Vector3.new(0, 0, 0)
+                    hrp.RotVelocity = Vector3.new(0, 0, 0)
+                end)
+                
+                RunService.Heartbeat:Wait()
+            end
+            
+            -- Garantir chegada na posição exata
+            pcall(function()
+                hrp.CFrame = CFrame.new(targetPos)
+            end)
+            
+            wait(0.05)
+        end
+    end
+    
+    -- Reativar estados
+    if humanoid then
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+        humanoid:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
+    end
+    
+    notify("✅ TP Completo", "Teleportado por todas posições!", 3)
+end
+
+-- Sistema Infinit Jump
+local function infinitJumpSystem()
+    if not InfinitJumpEnabled then return end
+    
+    local char = LocalPlayer.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+    
+    local hrp = char.HumanoidRootPart
+    local humanoid = char:FindFirstChild("Humanoid")
+    
+    if humanoid and humanoid:GetState() == Enum.HumanoidStateType.Jumping then
+        -- Criar plataforma que segue
+        local platform = Instance.new("Part")
+        platform.Size = Vector3.new(6, 0.5, 6)
+        platform.Anchored = true
+        platform.CanCollide = true
+        platform.Material = Enum.Material.ForceField
+        platform.BrickColor = BrickColor.new("Bright green")
+        platform.Transparency = 0.5
+        platform.Parent = workspace
+        
+        -- Seguir jogador
+        spawn(function()
+            for i = 1, 30 do
+                if platform and platform.Parent and char and hrp then
+                    platform.Position = hrp.Position - Vector3.new(0, 3.5, 0)
+                end
+                wait(0.05)
+            end
+            if platform and platform.Parent then
+                platform:Destroy()
+            end
+        end)
+    end
+end
+
+-- CRIAR GUI PRINCIPAL
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "GalaxyHubTP"
+ScreenGui.Parent = game.CoreGui
+ScreenGui.ResetOnSpawn = false
+
+-- Botão Circular (pode adicionar imagem)
+local CircleButton = Instance.new("ImageButton") -- Mudei pra ImageButton pra poder adicionar imagem
+CircleButton.Size = UDim2.new(0, 80, 0, 80)
+CircleButton.Position = UDim2.new(0, 20, 0.5, -40)
+CircleButton.BackgroundColor3 = Color3.fromRGB(100, 50, 255)
+CircleButton.BorderSizePixel = 0
+CircleButton.Image = "" -- COLOQUE O LINK DA IMAGEM AQUI: "rbxassetid://NUMERO_DA_IMAGEM"
+CircleButton.Parent = ScreenGui
+CircleButton.Active = true
+CircleButton.Draggable = true
+
+local CircleCorner = Instance.new("UICorner")
+CircleCorner.CornerRadius = UDim.new(1, 0)
+CircleCorner.Parent = CircleButton
+
+-- Texto no círculo (caso não tenha imagem)
+local CircleText = Instance.new("TextLabel")
+CircleText.Size = UDim2.new(1, 0, 1, 0)
+CircleText.BackgroundTransparency = 1
+CircleText.Text = "🌌"
+CircleText.TextColor3 = Color3.fromRGB(255, 255, 255)
+CircleText.Font = Enum.Font.GothamBold
+CircleText.TextSize = 35
+CircleText.Parent = CircleButton
+
+-- GUI Principal
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 450, 0, 550)
+MainFrame.Position = UDim2.new(0.5, -225, 0.5, -275)
+MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+MainFrame.BorderSizePixel = 0
+MainFrame.Visible = false
+MainFrame.Parent = ScreenGui
+MainFrame.Active = true
+MainFrame.Draggable = true
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 15)
+MainCorner.Parent = MainFrame
+
+-- Header
+local Header = Instance.new("Frame")
+Header.Size = UDim2.new(1, 0, 0, 60)
+Header.BackgroundColor3 = Color3.fromRGB(100, 50, 255)
+Header.BorderSizePixel = 0
+Header.Parent = MainFrame
+
+local HeaderCorner = Instance.new("UICorner")
+HeaderCorner.CornerRadius = UDim.new(0, 15)
+HeaderCorner.Parent = Header
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -60, 1, 0)
+Title.Position = UDim2.new(0, 15, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "🌌 GalaxyHub TP"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 24
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = Header
+
+-- Botão Fechar
+local CloseButton = Instance.new("TextButton")
+CloseButton.Size = UDim2.new(0, 45, 0, 45)
+CloseButton.Position = UDim2.new(1, -50, 0, 7.5)
+CloseButton.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+CloseButton.Text = "X"
+CloseButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+CloseButton.Font = Enum.Font.GothamBold
+CloseButton.TextSize = 18
+CloseButton.Parent = Header
+
+local CloseCorner = Instance.new("UICorner")
+CloseCorner.CornerRadius = UDim.new(0, 10)
+CloseCorner.Parent = CloseButton
+
+-- Scroll Frame para conteúdo
+local ScrollFrame = Instance.new("ScrollingFrame")
+ScrollFrame.Size = UDim2.new(1, -20, 1, -80)
+ScrollFrame.Position = UDim2.new(0, 10, 0, 70)
+ScrollFrame.BackgroundTransparency = 1
+ScrollFrame.BorderSizePixel = 0
+ScrollFrame.ScrollBarThickness = 8
+ScrollFrame.ScrollBarImageColor3 = Color3.fromRGB(100, 50, 255)
+ScrollFrame.Parent = MainFrame
+
+local Layout = Instance.new("UIListLayout")
+Layout.Padding = UDim.new(0, 10)
+Layout.Parent = ScrollFrame
+
+-- Função para criar botão toggle
+local function createToggleButton(text, position, callback)
+    local Button = Instance.new("TextButton")
+    Button.Size = UDim2.new(1, -10, 0, 50)
+    Button.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    Button.Text = text .. " [OFF]"
+    Button.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Button.Font = Enum.Font.GothamBold
+    Button.TextSize = 16
+    Button.Parent = ScrollFrame
+    
+    local ButtonCorner = Instance.new("UICorner")
+    ButtonCorner.CornerRadius = UDim.new(0, 10)
+    ButtonCorner.Parent = Button
+    
+    local isEnabled = false
+    
+    Button.MouseButton1Click:Connect(function()
+        isEnabled = not isEnabled
+        
+        if isEnabled then
+            Button.BackgroundColor3 = Color3.fromRGB(50, 255, 100)
+            Button.Text = text .. " [ON]"
+        else
+            Button.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+            Button.Text = text .. " [OFF]"
+        end
+        
+        callback(isEnabled)
+    end)
+    
+    return Button
+end
+
+-- Função para criar botão normal
+local function createButton(text, callback, color)
+    local Button = Instance.new("TextButton")
+    Button.Size = UDim2.new(1, -10, 0, 50)
+    Button.BackgroundColor3 = color or Color3.fromRGB(60, 60, 70)
+    Button.Text = text
+    Button.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Button.Font = Enum.Font.GothamBold
+    Button.TextSize = 16
+    Button.Parent = ScrollFrame
+    
+    local ButtonCorner = Instance.new("UICorner")
+    ButtonCorner.CornerRadius = UDim.new(0, 10)
+    ButtonCorner.Parent = Button
+    
+    Button.MouseButton1Click:Connect(callback)
+    
+    return Button
+end
+
+-- BOTÕES DA GUI
+
+createButton("📍 Mark Position", function()
+    if #MarkedPositions >= 5 then
+        notify("❌ Erro", "Limite de 5 posições! Apague para criar novas.", 4)
+        return
+    end
+    
+    local char = LocalPlayer.Character
+    if char and char:FindFirstChild("HumanoidRootPart") then
+        table.insert(MarkedPositions, char.HumanoidRootPart.Position)
+        notify("✅ Posição Marcada", "Posição " .. #MarkedPositions .. " salva!", 3)
+    end
+end, Color3.fromRGB(100, 50, 255))
+
+createButton("🗑️ Clear Positions", function()
+    MarkedPositions = {}
+    currentPositionIndex = 5
+    notify("🗑️ Limpeza", "Todas posições apagadas!", 3)
+end, Color3.fromRGB(255, 100, 50))
+
+createToggleButton("🎮 Teleguiado", nil, function(enabled)
+    TeleguiadoEnabled = enabled
+end)
+
+createToggleButton("🚀 TP Teleguiado", nil, function(enabled)
+    TPTeleguiadoEnabled = enabled
+    if enabled then
+        currentPositionIndex = 5
+    end
+end)
+
+createToggleButton("⚡ Auto-Disable TP", nil, function(enabled)
+    AutoDisableTP = enabled
+end)
+
+createButton("📌 TP Instant", function()
+    tpInstant()
+end, Color3.fromRGB(255, 200, 50))
+
+createToggleButton("💨 Super Boost", nil, function(enabled)
+    SuperBoostEnabled = enabled
+end)
+
+createToggleButton("♾️ Infinit Jump", nil, function(enabled)
+    InfinitJumpEnabled = enabled
+end)
+
+-- Atualizar CanvasSize
+ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, Layout.AbsoluteContentSize.Y + 10)
+
+-- Toggle GUI
+local isOpen = false
+CircleButton.MouseButton1Click:Connect(function()
+    isOpen = not isOpen
+    MainFrame.Visible = isOpen
+    
+    if isOpen then
+        CircleButton.BackgroundColor3 = Color3.fromRGB(50, 255, 100)
+    else
+        CircleButton.BackgroundColor3 = Color3.fromRGB(100, 50, 255)
+    end
+end)
+
+CloseButton.MouseButton1Click:Connect(function()
+    MainFrame.Visible = false
+    isOpen = false
+    CircleButton.BackgroundColor3 = Color3.fromRGB(100, 50, 255)
+end)
+
+-- Loop Principal
+RunService.RenderStepped:Connect(function()
+    local char = LocalPlayer.Character
+    if not char then return end
+    
+    local humanoid = char:FindFirstChild("Humanoid")
+    if not humanoid then return end
+    
+    -- Anti-Ragdoll sempre ativo
+    antiRagdoll()
+    
+    -- Teleguiado
+    if TeleguiadoEnabled then
+        floatPlayer()
+    end
+    
+    -- TP Teleguiado
+    if TPTeleguiadoEnabled then
+        tpTeleguiado()
+    end
+    
+    -- Super Boost
+    if SuperBoostEnabled then
+        humanoid.WalkSpeed = BOOST_SPEED
+        humanoid.JumpPower = BOOST_JUMP
+        
+        -- Queda lenta
+        if char:FindFirstChild("HumanoidRootPart") then
+            local hrp = char.HumanoidRootPart
+            if hrp.Velocity.Y < -10 then
+                hrp.Velocity = Vector3.new(hrp.Velocity.X, -10, hrp.Velocity.Z)
+            end
+        end
+    else
+        if humanoid.WalkSpeed == BOOST_SPEED then
+            humanoid.WalkSpeed = 16
+        end
+        if humanoid.JumpPower == BOOST_JUMP then
+            humanoid.JumpPower = 50
+        end
+    end
+    
+    -- Infinit Jump
+    infinitJumpSystem()
+end)
+
+-- Detectar pulo para Infinit Jump
+UserInputService.JumpRequest:Connect(function()
+    if InfinitJumpEnabled then
+        local char = LocalPlayer.Character
+        if char and char:FindFirstChild("Humanoid") then
+            char.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
+    end
+end)
+
+-- Manter funções após reset
+LocalPlayer.CharacterAdded:Connect(function(char)
+    wait(1)
+    
+    -- Reativar anti-kick
+    pcall(setupAntiKick)
+    
+    if SuperBoostEnabled or InfinitJumpEnabled then
+        local humanoid = char:WaitForChild("Humanoid")
+        
+        RunService.RenderStepped:Connect(function()
+            -- Anti-Ragdoll sempre
+            antiRagdoll()
+            
+            if SuperBoostEnabled then
+                humanoid.WalkSpeed = BOOST_SPEED
+                humanoid.JumpPower = BOOST_JUMP
+                
+                if char:FindFirstChild("HumanoidRootPart") then
+                    local hrp = char.HumanoidRootPart
+                    if hrp.Velocity.Y < -10 then
+                        hrp.Velocity = Vector3.new(hrp.Velocity.X, -10, hrp.Velocity.Z)
+                    end
+                end
+            end
+        end)
+    end
+end)
+
+-- Proteção contínua contra ragdoll
+spawn(function()
+    while wait(0.1) do
+        pcall(antiRagdoll)
+    end
+end)
+
+print("✅ GalaxyHub TP Carregado!")
+print("🛡️ Anti-Ragdoll: ATIVO")
+print("🛡️ Anti-Kick: ATIVO")
+notify("🌌 GalaxyHub TP", "Script carregado! Proteções ativas!", 4)
