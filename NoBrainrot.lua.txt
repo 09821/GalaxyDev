@@ -1,0 +1,850 @@
+-- Brainrot Control System - Tema Roxo
+-- Salve como: brainrot_control.lua
+
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+local mouse = player:GetMouse()
+
+-- Configurações do tema ROXO
+local theme = {
+    primary = Color3.fromRGB(138, 43, 226),    -- Roxo principal
+    secondary = Color3.fromRGB(75, 0, 130),    -- Roxo escuro
+    accent = Color3.fromRGB(186, 85, 211),     -- Roxo claro
+    light = Color3.fromRGB(216, 191, 216),     -- Lavanda
+    dark = Color3.fromRGB(48, 25, 52),         -- Roxo quase preto
+    success = Color3.fromRGB(46, 204, 113),    -- Verde
+    warning = Color3.fromRGB(241, 196, 15),    -- Amarelo
+    danger = Color3.fromRGB(231, 76, 60),      -- Vermelho
+    text = Color3.fromRGB(245, 245, 245),      -- Texto claro
+    subtext = Color3.fromRGB(200, 200, 200)    -- Texto secundário
+}
+
+-- Variáveis do sistema
+local guiEnabled = false
+local currentGui = nil
+local selectedModel = nil
+local brainrotFolder = nil
+local modelCache = {}
+local activeConnections = {}
+
+-- Encontrar a pasta ActiveBrainrots e coletar modelos
+local function findBrainrotFolder()
+    brainrotFolder = Workspace:FindFirstChild("ActiveBrainrots")
+    
+    if not brainrotFolder then
+        warn("⚠ Pasta 'ActiveBrainrots' não encontrada no Workspace!")
+        return nil
+    end
+    
+    -- Coletar todos os modelos com suas pastas (raridades)
+    modelCache = {}
+    for _, rarityFolder in ipairs(brainrotFolder:GetChildren()) do
+        if rarityFolder:IsA("Folder") then
+            for _, model in ipairs(rarityFolder:GetChildren()) do
+                if model:IsA("Model") then
+                    table.insert(modelCache, {
+                        Name = model.Name,
+                        DisplayName = model.Name .. " (" .. rarityFolder.Name .. ")",
+                        Model = model,
+                        Rarity = rarityFolder.Name,
+                        Folder = rarityFolder
+                    })
+                end
+            end
+        end
+    end
+    
+    -- Ordenar alfabeticamente por nome do modelo
+    table.sort(modelCache, function(a, b)
+        return a.Name:lower() < b.Name:lower()
+    end)
+    
+    return brainrotFolder
+end
+
+-- Criar efeito de gradiente
+local function createGradient(parent, color1, color2, rotation)
+    local gradient = Instance.new("UIGradient")
+    gradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, color1),
+        ColorSequenceKeypoint.new(1, color2)
+    })
+    gradient.Rotation = rotation or 90
+    gradient.Parent = parent
+    return gradient
+end
+
+-- Criar sombra elegante
+local function createShadow(frame)
+    local shadow = Instance.new("ImageLabel")
+    shadow.Name = "Shadow"
+    shadow.Size = UDim2.new(1, 10, 1, 10)
+    shadow.Position = UDim2.new(0, -5, 0, -5)
+    shadow.BackgroundTransparency = 1
+    shadow.Image = "rbxassetid://1316045217"
+    shadow.ImageColor3 = Color3.new(0, 0, 0)
+    shadow.ImageTransparency = 0.8
+    shadow.ScaleType = Enum.ScaleType.Slice
+    shadow.SliceCenter = Rect.new(10, 10, 118, 118)
+    shadow.Parent = frame
+    return shadow
+end
+
+-- Criar círculo arrastável estilizado
+local function createDragCircle()
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "BrainrotControlUI"
+    screenGui.Parent = player:WaitForChild("PlayerGui")
+    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    
+    local circle = Instance.new("Frame")
+    circle.Name = "DragCircle"
+    circle.Size = UDim2.new(0, 70, 0, 70)
+    circle.Position = UDim2.new(0.85, 0, 0.85, 0)
+    circle.BackgroundColor3 = theme.primary
+    circle.BorderSizePixel = 0
+    circle.ZIndex = 1000
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = circle
+    
+    -- Efeito de gradiente no círculo
+    createGradient(circle, theme.primary, theme.accent)
+    
+    -- Sombra
+    createShadow(circle)
+    
+    -- Ícone do círculo
+    local icon = Instance.new("TextLabel")
+    icon.Name = "Icon"
+    icon.Size = UDim2.new(1, 0, 1, 0)
+    icon.BackgroundTransparency = 1
+    icon.Text = "🌀"
+    icon.TextColor3 = theme.text
+    icon.TextScaled = true
+    icon.Font = Enum.Font.GothamBold
+    icon.ZIndex = 1001
+    icon.Parent = circle
+    
+    -- Efeito de brilho no hover
+    local glow = Instance.new("Frame")
+    glow.Name = "Glow"
+    glow.Size = UDim2.new(1, 20, 1, 20)
+    glow.Position = UDim2.new(0, -10, 0, -10)
+    glow.BackgroundColor3 = theme.accent
+    glow.BackgroundTransparency = 0.9
+    glow.BorderSizePixel = 0
+    glow.ZIndex = 999
+    
+    local glowCorner = Instance.new("UICorner")
+    glowCorner.CornerRadius = UDim.new(1, 0)
+    glowCorner.Parent = glow
+    
+    -- Animação de pulsar
+    local pulseTween
+    local function startPulse()
+        if pulseTween then pulseTween:Cancel() end
+        
+        pulseTween = TweenService:Create(
+            glow,
+            TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut, -1, true),
+            {BackgroundTransparency = 0.7}
+        )
+        pulseTween:Play()
+    end
+    
+    -- Tornar arrastável
+    local dragging = false
+    local dragInput, dragStart, startPos
+    
+    local function update(input)
+        local delta = input.Position - dragStart
+        circle.Position = UDim2.new(
+            startPos.X.Scale, 
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale, 
+            startPos.Y.Offset + delta.Y
+        )
+    end
+    
+    circle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or 
+           input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = circle.Position
+            
+            -- Feedback visual
+            circle.BackgroundTransparency = 0.2
+            icon.Text = "✨"
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                    circle.BackgroundTransparency = 0
+                    icon.Text = "🌀"
+                end
+            end)
+        end
+    end)
+    
+    circle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or 
+           input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input == dragInput) then
+            update(input)
+        end
+    end)
+    
+    -- Sistema de clique para abrir/fechar GUI
+    local clickCount = 0
+    local lastClickTime = 0
+    
+    circle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or 
+           input.UserInputType == Enum.UserInputType.Touch then
+            
+            local currentTime = tick()
+            if currentTime - lastClickTime < 0.3 then
+                clickCount = clickCount + 1
+            else
+                clickCount = 1
+            end
+            lastClickTime = currentTime
+            
+            if clickCount == 2 then
+                clickCount = 0
+                guiEnabled = not guiEnabled
+                
+                if guiEnabled then
+                    -- Criar título com efeito
+                    icon.Text = "No Steal\nA brainrot"
+                    icon.TextSize = 14
+                    icon.TextWrapped = true
+                    
+                    -- Criar GUI principal
+                    createMainGUI()
+                    startPulse()
+                else
+                    -- Fechar GUI
+                    icon.Text = "🌀"
+                    icon.TextSize = 24
+                    icon.TextWrapped = false
+                    
+                    if pulseTween then
+                        pulseTween:Cancel()
+                        glow.BackgroundTransparency = 0.9
+                    end
+                    
+                    if currentGui then
+                        currentGui:Destroy()
+                        currentGui = nil
+                    end
+                end
+            end
+        end
+    end)
+    
+    glow.Parent = circle
+    circle.Parent = screenGui
+    
+    return screenGui
+end
+
+-- Criar botão estilizado
+local function createStyledButton(name, text, color, parent)
+    local button = Instance.new("TextButton")
+    button.Name = name
+    button.Size = UDim2.new(1, 0, 0, 40)
+    button.BackgroundColor3 = color
+    button.Text = text
+    button.TextColor3 = theme.text
+    button.Font = Enum.Font.GothamBold
+    button.TextSize = 14
+    button.AutoButtonColor = false
+    button.BorderSizePixel = 0
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = button
+    
+    createGradient(button, color, Color3.new(
+        math.min(color.R * 1.2, 1),
+        math.min(color.G * 1.2, 1),
+        math.min(color.B * 1.2, 1)
+    ))
+    
+    createShadow(button)
+    
+    -- Efeito hover
+    local originalColor = button.BackgroundColor3
+    button.MouseEnter:Connect(function()
+        TweenService:Create(
+            button,
+            TweenInfo.new(0.2, Enum.EasingStyle.Quad),
+            {BackgroundTransparency = 0.1}
+        ):Play()
+    end)
+    
+    button.MouseLeave:Connect(function()
+        TweenService:Create(
+            button,
+            TweenInfo.new(0.2, Enum.EasingStyle.Quad),
+            {BackgroundTransparency = 0}
+        ):Play()
+    end)
+    
+    -- Efeito clique
+    button.MouseButton1Down:Connect(function()
+        button.BackgroundTransparency = 0.3
+    end)
+    
+    button.MouseButton1Up:Connect(function()
+        button.BackgroundTransparency = 0
+    end)
+    
+    if parent then
+        button.Parent = parent
+    end
+    
+    return button
+end
+
+-- Criar item da lista
+local function createListItem(modelData, index, parent, callback)
+    local item = Instance.new("Frame")
+    item.Name = "Item_" .. index
+    item.Size = UDim2.new(1, -10, 0, 50)
+    item.Position = UDim2.new(0, 5, 0, (index-1) * 55)
+    item.BackgroundColor3 = index % 2 == 0 and theme.dark or Color3.fromRGB(40, 20, 45)
+    item.BorderSizePixel = 0
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = item
+    
+    -- Gradiente sutil
+    local gradient = Instance.new("UIGradient")
+    gradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, item.BackgroundColor3),
+        ColorSequenceKeypoint.new(1, Color3.new(
+            item.BackgroundColor3.R * 0.9,
+            item.BackgroundColor3.G * 0.9,
+            item.BackgroundColor3.B * 0.9
+        ))
+    })
+    gradient.Rotation = 90
+    gradient.Parent = item
+    
+    -- Informações do modelo
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Size = UDim2.new(0.6, 0, 0.6, 0)
+    nameLabel.Position = UDim2.new(0, 15, 0, 5)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Text = modelData.Name
+    nameLabel.TextColor3 = theme.text
+    nameLabel.Font = Enum.Font.GothamBold
+    nameLabel.TextSize = 14
+    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+    nameLabel.Parent = item
+    
+    local rarityLabel = Instance.new("TextLabel")
+    rarityLabel.Size = UDim2.new(0.6, 0, 0.4, 0)
+    rarityLabel.Position = UDim2.new(0, 15, 0.6, 0)
+    rarityLabel.BackgroundTransparency = 1
+    rarityLabel.Text = "Raridade: " .. modelData.Rarity
+    rarityLabel.TextColor3 = theme.accent
+    rarityLabel.Font = Enum.Font.Gotham
+    rarityLabel.TextSize = 12
+    rarityLabel.TextXAlignment = Enum.TextXAlignment.Left
+    rarityLabel.Parent = item
+    
+    -- Botão de seleção
+    local selectBtn = createStyledButton("SelectBtn", "SELECIONAR", theme.primary, item)
+    selectBtn.Size = UDim2.new(0.3, 0, 0.7, 0)
+    selectBtn.Position = UDim2.new(0.65, 0, 0.15, 0)
+    selectBtn.TextSize = 12
+    
+    selectBtn.MouseButton1Click:Connect(function()
+        if callback then
+            callback(modelData)
+        end
+    end)
+    
+    item.Parent = parent
+    return item
+end
+
+-- Criar GUI principal
+local function createMainGUI()
+    if currentGui then
+        currentGui:Destroy()
+    end
+    
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "BrainrotMainGUI"
+    gui.Parent = player:WaitForChild("PlayerGui")
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    currentGui = gui
+    
+    -- Overlay escuro
+    local overlay = Instance.new("Frame")
+    overlay.Size = UDim2.new(1, 0, 1, 0)
+    overlay.BackgroundColor3 = Color3.new(0, 0, 0)
+    overlay.BackgroundTransparency = 0.5
+    overlay.BorderSizePixel = 0
+    overlay.ZIndex = 1
+    
+    -- Frame principal
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(0, 500, 0, 600)
+    mainFrame.Position = UDim2.new(0.5, -250, 0.5, -300)
+    mainFrame.BackgroundColor3 = theme.dark
+    mainFrame.BorderSizePixel = 0
+    mainFrame.ClipsDescendants = true
+    mainFrame.ZIndex = 2
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 12)
+    corner.Parent = mainFrame
+    
+    createShadow(mainFrame)
+    
+    -- Cabeçalho com gradiente
+    local header = Instance.new("Frame")
+    header.Size = UDim2.new(1, 0, 0, 80)
+    header.BackgroundColor3 = theme.primary
+    header.BorderSizePixel = 0
+    
+    local headerCorner = Instance.new("UICorner")
+    headerCorner.CornerRadius = UDim.new(0, 12)
+    headerCorner.Parent = header
+    
+    createGradient(header, theme.primary, theme.secondary)
+    
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0.7, 0)
+    title.BackgroundTransparency = 1
+    title.Text = "🧠 BRAINROT CONTROL"
+    title.TextColor3 = theme.text
+    title.Font = Enum.Font.GothamBlack
+    title.TextSize = 24
+    title.TextStrokeTransparency = 0.8
+    title.TextStrokeColor3 = Color3.new(0, 0, 0)
+    title.Parent = header
+    
+    local subtitle = Instance.new("TextLabel")
+    subtitle.Size = UDim2.new(1, 0, 0.3, 0)
+    subtitle.Position = UDim2.new(0, 0, 0.7, 0)
+    subtitle.BackgroundTransparency = 1
+    subtitle.Text = "No Steal A Brainrot • Sistema Avançado"
+    subtitle.TextColor3 = theme.light
+    subtitle.Font = Enum.Font.Gotham
+    subtitle.TextSize = 12
+    subtitle.Parent = header
+    
+    -- Barra de pesquisa
+    local searchContainer = Instance.new("Frame")
+    searchContainer.Size = UDim2.new(0.9, 0, 0, 50)
+    searchContainer.Position = UDim2.new(0.05, 0, 0, 100)
+    searchContainer.BackgroundColor3 = Color3.fromRGB(60, 30, 65)
+    searchContainer.BorderSizePixel = 0
+    
+    local searchCorner = Instance.new("UICorner")
+    searchCorner.CornerRadius = UDim.new(0, 8)
+    searchCorner.Parent = searchContainer
+    
+    local searchIcon = Instance.new("TextLabel")
+    searchIcon.Size = UDim2.new(0, 40, 1, 0)
+    searchIcon.BackgroundTransparency = 1
+    searchIcon.Text = "🔍"
+    searchIcon.TextColor3 = theme.accent
+    searchIcon.Font = Enum.Font.GothamBold
+    searchIcon.TextSize = 18
+    searchIcon.Parent = searchContainer
+    
+    local searchBox = Instance.new("TextBox")
+    searchBox.Size = UDim2.new(1, -50, 1, 0)
+    searchBox.Position = UDim2.new(0, 40, 0, 0)
+    searchBox.BackgroundTransparency = 1
+    searchBox.PlaceholderText = "Pesquisar modelos por nome..."
+    searchBox.PlaceholderColor3 = theme.subtext
+    searchBox.TextColor3 = theme.text
+    searchBox.Font = Enum.Font.Gotham
+    searchBox.TextSize = 14
+    searchBox.TextXAlignment = Enum.TextXAlignment.Left
+    searchBox.ClearTextOnFocus = false
+    searchBox.Parent = searchContainer
+    
+    -- Frame de scroll para lista
+    local scrollFrame = Instance.new("ScrollingFrame")
+    scrollFrame.Size = UDim2.new(0.9, 0, 0, 280)
+    scrollFrame.Position = UDim2.new(0.05, 0, 0, 160)
+    scrollFrame.BackgroundColor3 = Color3.fromRGB(45, 20, 50)
+    scrollFrame.BorderSizePixel = 0
+    scrollFrame.ScrollBarThickness = 8
+    scrollFrame.ScrollBarImageColor3 = theme.accent
+    scrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    
+    local scrollCorner = Instance.new("UICorner")
+    scrollCorner.CornerRadius = UDim.new(0, 8)
+    scrollCorner.Parent = scrollFrame
+    
+    -- Painel de seleção atual
+    local selectionPanel = Instance.new("Frame")
+    selectionPanel.Size = UDim2.new(0.9, 0, 0, 60)
+    selectionPanel.Position = UDim2.new(0.05, 0, 0, 450)
+    selectionPanel.BackgroundColor3 = Color3.fromRGB(55, 25, 60)
+    selectionPanel.BorderSizePixel = 0
+    
+    local selectionCorner = Instance.new("UICorner")
+    selectionCorner.CornerRadius = UDim.new(0, 8)
+    selectionCorner.Parent = selectionPanel
+    
+    local selectedLabel = Instance.new("TextLabel")
+    selectedLabel.Size = UDim2.new(1, -20, 1, 0)
+    selectedLabel.Position = UDim2.new(0, 10, 0, 0)
+    selectedLabel.BackgroundTransparency = 1
+    selectedLabel.Text = selectedModel and "✅ " .. selectedModel.DisplayName or "⚠ Nenhum modelo selecionado"
+    selectedLabel.TextColor3 = selectedModel and theme.success or theme.warning
+    selectedLabel.Font = Enum.Font.GothamBold
+    selectedLabel.TextSize = 14
+    selectedLabel.TextXAlignment = Enum.TextXAlignment.Left
+    selectedLabel.TextWrapped = true
+    selectedLabel.Parent = selectionPanel
+    
+    -- Painel de botões de função
+    local functionPanel = Instance.new("Frame")
+    functionPanel.Size = UDim2.new(0.9, 0, 0, 180)
+    functionPanel.Position = UDim2.new(0.05, 0, 0, 520)
+    functionPanel.BackgroundTransparency = 1
+    
+    -- Adicionar elementos à hierarquia
+    overlay.Parent = gui
+    mainFrame.Parent = gui
+    header.Parent = mainFrame
+    searchContainer.Parent = mainFrame
+    scrollFrame.Parent = mainFrame
+    selectionPanel.Parent = mainFrame
+    functionPanel.Parent = mainFrame
+    
+    -- Variáveis para a lista
+    local listItems = {}
+    
+    -- Função para atualizar a lista
+    local function updateList(filter)
+        -- Limpar lista atual
+        for _, item in ipairs(listItems) do
+            item:Destroy()
+        end
+        listItems = {}
+        
+        -- Filtrar modelos
+        local filteredModels = {}
+        if filter and filter ~= "" then
+            local lowerFilter = filter:lower()
+            for _, modelData in ipairs(modelCache) do
+                if modelData.Name:lower():find(lowerFilter, 1, true) or 
+                   modelData.Rarity:lower():find(lowerFilter, 1, true) then
+                    table.insert(filteredModels, modelData)
+                end
+            end
+        else
+            filteredModels = modelCache
+        end
+        
+        -- Criar novos itens
+        for i, modelData in ipairs(filteredModels) do
+            local item = createListItem(modelData, i, scrollFrame, function(selectedData)
+                selectedModel = selectedData
+                selectedLabel.Text = "✅ " .. selectedData.DisplayName
+                selectedLabel.TextColor3 = theme.success
+                
+                -- Fechar GUI após seleção
+                task.wait(0.5)
+                guiEnabled = false
+                gui:Destroy()
+                currentGui = nil
+                
+                -- Atualizar ícone do círculo
+                local playerGui = player:WaitForChild("PlayerGui")
+                local brainrotControl = playerGui:FindFirstChild("BrainrotControlUI")
+                if brainrotControl then
+                    local circle = brainrotControl:FindFirstChild("DragCircle")
+                    if circle then
+                        circle.Icon.Text = "🌀"
+                        circle.Icon.TextSize = 24
+                    end
+                end
+            end)
+            table.insert(listItems, item)
+        end
+        
+        scrollFrame.CanvasSize = UDim2.new(0, 0, 0, #filteredModels * 55)
+    end
+    
+    -- Configurar barra de pesquisa
+    searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+        updateList(searchBox.Text)
+    end)
+    
+    -- Inicializar lista
+    updateList("")
+    
+    -- Criar botões de função
+    local function1 = createStyledButton("ChooseModel", "1️⃣ ESCOLHER MODELO", theme.primary, functionPanel)
+    function1.Position = UDim2.new(0, 0, 0, 0)
+    
+    local function2 = createStyledButton("CatchBrainrot", "2️⃣ CATCH BRAINROT", theme.success, functionPanel)
+    function2.Position = UDim2.new(0, 0, 0, 50)
+    
+    local function3 = createStyledButton("AutoTeleport", "3️⃣ TELEPORT AUTOMÁTICO", theme.warning, functionPanel)
+    function3.Position = UDim2.new(0, 0, 0, 100)
+    
+    local function4 = createStyledButton("ManualTeleport", "4️⃣ TELEPORT MANUAL", theme.danger, functionPanel)
+    function4.Position = UDim2.new(0, 0, 0, 150)
+    
+    -- FUNÇÃO 2: Catch brainrot
+    function2.MouseButton1Click:Connect(function()
+        if not selectedModel then
+            selectedLabel.Text = "⚠ Selecione um modelo primeiro!"
+            selectedLabel.TextColor3 = theme.danger
+            task.wait(1.5)
+            selectedLabel.TextColor3 = selectedModel and theme.success or theme.warning
+            return
+        end
+        
+        local targetModel = selectedModel.Model
+        local humanoidRootPart = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+        
+        if targetModel and humanoidRootPart then
+            -- Efeito visual
+            function2.Text = "✨ TRAZENDO..."
+            
+            -- Teleportar modelo para o jogador
+            targetModel:PivotTo(humanoidRootPart.CFrame + Vector3.new(0, 0, -8))
+            
+            -- Feedback
+            selectedLabel.Text = "🎯 " .. selectedModel.Name .. " trazido!"
+            selectedLabel.TextColor3 = theme.success
+            
+            task.wait(0.5)
+            function2.Text = "2️⃣ CATCH BRAINROT"
+        end
+    end)
+    
+    -- FUNÇÃO 3: Teleport automático
+    function3.MouseButton1Click:Connect(function()
+        if not selectedModel then
+            selectedLabel.Text = "⚠ Selecione um modelo primeiro!"
+            selectedLabel.TextColor3 = theme.danger
+            task.wait(1.5)
+            selectedLabel.TextColor3 = selectedModel and theme.success or theme.warning
+            return
+        end
+        
+        local targetModel = selectedModel.Model
+        local character = player.Character
+        local humanoidRootPart = character and character:FindFirstChild("HumanoidRootPart")
+        local spawnLocation = nil
+        
+        -- Encontrar spawn point
+        for _, obj in ipairs(Workspace:GetChildren()) do
+            if obj.Name == "SpawnLocation" or obj:IsA("SpawnLocation") then
+                spawnLocation = obj
+                break
+            end
+        end
+        
+        if not spawnLocation then
+            -- Criar spawn padrão se não existir
+            spawnLocation = Instance.new("Part")
+            spawnLocation.Name = "PlayerSpawn"
+            spawnLocation.Size = Vector3.new(5, 1, 5)
+            spawnLocation.Position = Vector3.new(0, 5, 0)
+            spawnLocation.Anchored = true
+            spawnLocation.CanCollide = true
+            spawnLocation.Parent = Workspace
+        end
+        
+        if targetModel and humanoidRootPart then
+            function3.Text = "🚀 TELEPORTANDO..."
+            
+            -- Salvar posição original
+            local originalCFrame = humanoidRootPart.CFrame
+            
+            -- Teleportar para o modelo
+            humanoidRootPart.CFrame = targetModel:GetPivot() + Vector3.new(0, 5, 0)
+            selectedLabel.Text = "📍 Teleportado para: " .. selectedModel.Name
+            selectedLabel.TextColor3 = theme.accent
+            
+            -- Sistema de detecção de atualização
+            local updateConnection
+            updateConnection = targetModel.Changed:Connect(function()
+                -- Quando o modelo atualizar, voltar ao spawn
+                humanoidRootPart.CFrame = spawnLocation.CFrame + Vector3.new(0, 5, 0)
+                selectedLabel.Text = "🔙 Retornado ao spawn (atualização detectada)"
+                
+                task.wait(5)
+                humanoidRootPart.CFrame = spawnLocation.CFrame + Vector3.new(0, 5, 0)
+                
+                if updateConnection then
+                    updateConnection:Disconnect()
+                end
+            end)
+            
+            -- Método alternativo: Esperar 5 segundos
+            task.wait(5)
+            humanoidRootPart.CFrame = spawnLocation.CFrame + Vector3.new(0, 5, 0)
+            
+            function3.Text = "3️⃣ TELEPORT AUTOMÁTICO"
+            selectedLabel.Text = "✅ Teleport automático completo!"
+        end
+    end)
+    
+    -- FUNÇÃO 4: Teleport manual
+    function4.MouseButton1Click:Connect(function()
+        if not selectedModel then
+            selectedLabel.Text = "⚠ Selecione um modelo primeiro!"
+            selectedLabel.TextColor3 = theme.danger
+            task.wait(1.5)
+            selectedLabel.TextColor3 = selectedModel and theme.success or theme.warning
+            return
+        end
+        
+        local targetModel = selectedModel.Model
+        local character = player.Character
+        local humanoidRootPart = character and character:FindFirstChild("HumanoidRootPart")
+        local spawnLocation = nil
+        
+        -- Encontrar spawn point
+        for _, obj in ipairs(Workspace:GetChildren()) do
+            if obj.Name == "SpawnLocation" or obj:IsA("SpawnLocation") then
+                spawnLocation = obj
+                break
+            end
+        end
+        
+        if targetModel and humanoidRootPart then
+            function4.Text = "🎮 MODO MANUAL ATIVO"
+            function4.BackgroundColor3 = Color3.fromRGB(155, 89, 182)
+            
+            -- Teleportar para o modelo
+            humanoidRootPart.CFrame = targetModel:GetPivot() + Vector3.new(0, 5, 0)
+            selectedLabel.Text = "📍 Modo manual ativo - Clique para retornar"
+            selectedLabel.TextColor3 = theme.accent
+            
+            -- Sistema de detecção de atualização
+            local updateDetected = false
+            local updateConnection
+            updateConnection = targetModel.Changed:Connect(function()
+                updateDetected = true
+            end)
+            
+            -- Botão para retornar manualmente
+            local manualReturn = false
+            local clickConnection
+            clickConnection = function4.MouseButton1Click:Connect(function()
+                if not manualReturn then
+                    manualReturn = true
+                end
+            end)
+            
+            -- Verificar retorno
+            local checkConnection
+            checkConnection = RunService.Heartbeat:Connect(function()
+                if updateDetected or manualReturn then
+                    if spawnLocation then
+                        humanoidRootPart.CFrame = spawnLocation.CFrame + Vector3.new(0, 5, 0)
+                        
+                        if updateDetected then
+                            selectedLabel.Text = "🔙 Retornado (atualização detectada)"
+                        else
+                            selectedLabel.Text = "🔙 Retornado manualmente"
+                        end
+                        
+                        -- Limpar conexões
+                        if updateConnection then updateConnection:Disconnect() end
+                        if clickConnection then clickConnection:Disconnect() end
+                        if checkConnection then checkConnection:Disconnect() end
+                        
+                        -- Resetar botão
+                        task.wait(1)
+                        function4.Text = "4️⃣ TELEPORT MANUAL"
+                        function4.BackgroundColor3 = theme.danger
+                        selectedLabel.Text = "✅ " .. selectedModel.DisplayName
+                    end
+                end
+            end)
+        end
+    end)
+    
+    -- Animar entrada da GUI
+    mainFrame.Position = UDim2.new(0.5, -250, 0.5, -350)
+    TweenService:Create(
+        mainFrame,
+        TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+        {Position = UDim2.new(0.5, -250, 0.5, -300)}
+    ):Play()
+end
+
+-- Inicializar sistema
+local function initialize()
+    -- Encontrar pasta ActiveBrainrots
+    findBrainrotFolder()
+    
+    if brainrotFolder then
+        print("🎮 Brainrot Control System Inicializado!")
+        print("📁 Pasta: ActiveBrainrots")
+        print("📊 Modelos encontrados: " .. #modelCache)
+        print("━━━━━━━━━━━━━━━━━━━━━━━")
+        
+        for _, modelData in ipairs(modelCache) do
+            print("   • " .. modelData.Name .. " (" .. modelData.Rarity .. ")")
+        end
+        print("━━━━━━━━━━━━━━━━━━━━━━━")
+    else
+        print("⚠ Pasta ActiveBrainrots não encontrada!")
+        print("💡 Crie uma pasta com este nome no Workspace")
+    end
+    
+    -- Criar círculo arrastável
+    createDragCircle()
+    
+    print("\n🎯 Instruções:")
+    print("   • Clique duplo no círculo roxo para abrir/fechar")
+    print("   • Use a pesquisa para filtrar modelos")
+    print("   • Selecione um modelo clicando em 'SELECIONAR'")
+    print("   • Use os 4 botões para controlar os modelos")
+end
+
+-- Executar inicialização
+task.spawn(initialize)
+
+return {
+    RefreshModels = findBrainrotFolder,
+    GetSelectedModel = function() return selectedModel end,
+    GetModelCache = function() return modelCache end,
+    OpenGUI = function()
+        guiEnabled = true
+        createMainGUI()
+    end,
+    CloseGUI = function()
+        guiEnabled = false
+        if currentGui then
+            currentGui:Destroy()
+            currentGui = nil
+        end
+    end
+}
