@@ -1,0 +1,116 @@
+-- No Steal A Brainrot
+-- GUI Roxa com sistema completo
+
+local PLAYER = game.Players.LocalPlayer
+local CHAR = PLAYER.Character or PLAYER.CharacterAdded:Wait()
+local HRP = CHAR:WaitForChild("HumanoidRootPart")
+
+local THEME_COLOR = Color3.fromRGB(140,70,255)
+local BG_COLOR = Color3.fromRGB(25,20,40)
+
+local gui = Instance.new("ScreenGui", game.CoreGui)
+gui.Name = "NoStealBrainrotGUI"
+gui.ResetOnSpawn = false
+
+-- Botão circular
+local circle = Instance.new("TextButton", gui)
+circle.Size = UDim2.fromOffset(60,60)
+circle.Position = UDim2.fromScale(0.05,0.5)
+circle.Text = ""
+circle.BackgroundColor3 = THEME_COLOR
+circle.Draggable = true
+circle.Active = true
+Instance.new("UICorner", circle).CornerRadius = UDim.new(1,0)
+
+-- Frame principal
+local main = Instance.new("Frame", gui)
+main.Size = UDim2.fromOffset(420,360)
+main.Position = UDim2.fromScale(0.5,0.5)
+main.AnchorPoint = Vector2.new(0.5,0.5)
+main.BackgroundColor3 = BG_COLOR
+main.Visible = false
+Instance.new("UICorner", main)
+
+local title = Instance.new("TextLabel", main)
+title.Size = UDim2.new(1,0,0,45)
+title.Text = "No Steal A brainrot"
+title.TextColor3 = Color3.new(1,1,1)
+title.BackgroundTransparency = 1
+title.Font = Enum.Font.GothamBold
+title.TextSize = 22
+
+-- Lista
+local list = Instance.new("ScrollingFrame", main)
+list.Position = UDim2.fromOffset(10,55)
+list.Size = UDim2.new(1,-20,1,-120)
+list.CanvasSize = UDim2.new(0,0,0,0)
+list.AutomaticCanvasSize = Enum.AutomaticSize.Y
+list.ScrollBarImageColor3 = THEME_COLOR
+
+local layout = Instance.new("UIListLayout", list)
+layout.Padding = UDim.new(0,6)
+
+local selectedModel = nil
+local spawnCFrame = HRP.CFrame
+
+-- Função para ler Brainrots
+local function loadBrainrots()
+	list:ClearAllChildren()
+	layout.Parent = list
+
+	local folder = workspace:FindFirstChild("ActiveBrainrots")
+	if not folder then return end
+
+	local entries = {}
+
+	for _,rarity in ipairs(folder:GetChildren()) do
+		if rarity:IsA("Folder") then
+			for _,model in ipairs(rarity:GetChildren()) do
+				if model:IsA("Model") then
+					table.insert(entries, {
+						model = model,
+						text = model.Name .. " (" .. rarity.Name .. ")"
+					})
+				end
+			end
+		end
+	end
+
+	table.sort(entries, function(a,b)
+		return a.text:lower() < b.text:lower()
+	end)
+
+	for _,info in ipairs(entries) do
+		local b = Instance.new("TextButton", list)
+		b.Size = UDim2.new(1,-10,0,35)
+		b.Text = info.text
+		b.BackgroundColor3 = Color3.fromRGB(50,40,90)
+		b.TextColor3 = Color3.new(1,1,1)
+		b.Font = Enum.Font.Gotham
+		b.TextSize = 14
+		Instance.new("UICorner", b)
+
+		b.MouseButton1Click:Connect(function()
+			selectedModel = info.model
+			main.Visible = false
+		end)
+	end
+end
+
+-- Toggle GUI
+circle.MouseButton1Click:Connect(function()
+	main.Visible = not main.Visible
+	if main.Visible then
+		loadBrainrots()
+	end
+end)
+
+-- Catch Brainrot
+game:GetService("UserInputService").InputBegan:Connect(function(i,g)
+	if g then return end
+	if i.KeyCode == Enum.KeyCode.C and selectedModel then
+		if selectedModel.PrimaryPart then
+			selectedModel:SetPrimaryPartCFrame(HRP.CFrame)
+		end
+	end
+end)
