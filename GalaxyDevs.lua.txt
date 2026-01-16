@@ -1,652 +1,956 @@
--- Brainrot Control System
--- Salve como: brainrot_system.lua
-
+-- Galaxy Hub - Blox Fruits Automation Script
+-- Configurações iniciais
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
-local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local player = Players.LocalPlayer
-local mouse = player:GetMouse()
+-- Lista de frutas válidas
+local VALID_FRUITS = {
+    COMMON = {"Rocket", "Spin", "Chop", "Spring", "Bomb", "Smoke", "Spike"},
+    UNCOMMON = {"Flame", "Ice", "Sand", "Dark", "Diamond", "Light", "Ghost"},
+    RARE = {"Rubber", "Barrier", "Magma", "Quake", "Love", "Spider", "Sound"},
+    LEGENDARY = {"Phoenix", "Portal", "Rumble", "Gravity", "Blizzard", "Eagle", "Creation", "Pain"},
+    MYTHICAL = {"Dough", "Shadow", "Venom", "Control", "Spirit", "Leopard", "Mammoth", "T-Rex", "Kitsune", "Dragon", "Gas", "Yeti", "Tiger", "Blade"}
+}
 
--- Variáveis do sistema
-local guiEnabled = false
-local currentGui = nil
-local selectedModelName = nil
-local brainrotFolder = nil
-local modelCache = {}
-local activeConnections = {}
+-- Variáveis globais
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+local ConfigFileName = "GalaxyHub_config.json"
+local CurrentConfig = {}
+local Dragging, DragInput, DragStart, StartPos
+local CircleGui, MainGui
+local AimbotEnabled = false
+local AimbotButton, AimbotTarget
+local EspEnabled = false
+local FruitEsp = {}
+local AutoServerHopEnabled = false
+local AutoAfkEnabled = false
+local Whitelist = {}
+local Blacklist = {}
+local ServerHopHistory = {}
+local NotificationsSent = 0
+local FruitsCollected = 0
 
--- Encontrar a pasta ActiveBrainrots
-local function findBrainrotFolder()
-    brainrotFolder = Workspace:FindFirstChild("ActiveBrainrots")
+-- Criar pasta de configuração
+local function SaveConfig()
+    local config = {
+        Whitelist = Whitelist,
+        Blacklist = Blacklist,
+        AimbotEnabled = AimbotEnabled,
+        EspEnabled = EspEnabled,
+        AutoTpWhitelist = CurrentConfig.AutoTpWhitelist or false,
+        AutoOffTpWhitelist = CurrentConfig.AutoOffTpWhitelist or false,
+        WebhookUrl = CurrentConfig.WebhookUrl or "",
+        CirclePosition = CurrentConfig.CirclePosition or {X = 100, Y = 100}
+    }
     
-    if not brainrotFolder then
-        warn("Pasta 'ActiveBrainrots' não encontrada no Workspace!")
-        return nil
+    writefile(ConfigFileName, HttpService:JSONEncode(config))
+end
+
+local function LoadConfig()
+    if isfile(ConfigFileName) then
+        local success, data = pcall(function()
+            return HttpService:JSONDecode(readfile(ConfigFileName))
+        end)
+        
+        if success and data then
+            Whitelist = data.Whitelist or {}
+            Blacklist = data.Blacklist or {}
+            AimbotEnabled = data.AimbotEnabled or false
+            EspEnabled = data.EspEnabled or false
+            CurrentConfig.AutoTpWhitelist = data.AutoTpWhitelist or false
+            CurrentConfig.AutoOffTpWhitelist = data.AutoOffTpWhitelist or false
+            CurrentConfig.WebhookUrl = data.WebhookUrl or ""
+            CurrentConfig.CirclePosition = data.CirclePosition or {X = 100, Y = 100}
+            return true
+        end
     end
+    return false
+end
+
+-- Funções de utilidade
+local function GetRarity(fruitName)
+    for rarity, fruits in pairs(VALID_FRUITS) do
+        for _, name in ipairs(fruits) do
+            if name:lower() == fruitName:lower() then
+                return rarity
+            end
+        end
+    end
+    return "UNKNOWN"
+end
+
+local function FindFruitInWorld()
+    local worldFolder = Workspace:FindFirstChild("_WorldOrigin")
+    if not worldFolder then return {} end
     
-    -- Coletar todos os modelos
-    modelCache = {}
-    for _, subFolder in ipairs(brainrotFolder:GetChildren()) do
-        if subFolder:IsA("Folder") then
-            for _, model in ipairs(subFolder:GetChildren()) do
-                if model:IsA("Model") then
-                    table.insert(modelCache, {
-                        Name = model.Name,
-                        Model = model,
-                        FolderName = subFolder.Name
-                    })
+    local foundFruits = {}
+    
+    for _, obj in pairs(worldFolder:GetDescendants()) do
+        if obj:IsA("Tool") then
+            local fruitName = obj.Name
+            for _, fruitList in pairs(VALID_FRUITS) do
+                for _, validName in ipairs(fruitList) do
+                    if validName:lower() == fruitName:lower() then
+                        table.insert(foundFruits, {
+                            Object = obj,
+                            Name = fruitName,
+                            Rarity = GetRarity(fruitName)
+                        })
+                        break
+                    end
                 end
             end
         end
     end
     
-    -- Ordenar alfabeticamente
-    table.sort(modelCache, function(a, b)
-        return a.Name:lower() < b.Name:lower()
-    end)
-    
-    return brainrotFolder
+    return foundFruits
 end
 
--- Criar círculo arrastável
-local function createDragCircle()
-    local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "BrainrotControl"
-    screenGui.Parent = player:WaitForChild("PlayerGui")
-    
-    local circle = Instance.new("Frame")
-    circle.Name = "DragCircle"
-    circle.Size = UDim2.new(0, 60, 0, 60)
-    circle.Position = UDim2.new(0.8, 0, 0.8, 0)
-    circle.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
-    circle.BackgroundTransparency = 0.3
-    circle.BorderSizePixel = 0
-    circle.ZIndex = 100
-    
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(1, 0)
-    corner.Parent = circle
-    
-    local title = Instance.new("TextLabel")
-    title.Name = "Title"
-    title.Size = UDim2.new(1, 0, 1, 0)
-    title.BackgroundTransparency = 1
-    title.Text = "☺"
-    title.TextColor3 = Color3.fromRGB(255, 255, 255)
-    title.TextScaled = true
-    title.Font = Enum.Font.GothamBold
-    title.Parent = circle
-    
-    -- Tornar arrastável
-    local dragging = false
-    local dragInput, dragStart, startPos
-    
-    local function update(input)
-        local delta = input.Position - dragStart
-        circle.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, 
-                                   startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-    end
-    
-    circle.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or 
-           input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = circle.Position
+-- Sistema de arrastar
+local function MakeDraggable(gui)
+    gui.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            Dragging = true
+            DragStart = input.Position
+            StartPos = gui.Position
             
             input.Changed:Connect(function()
                 if input.UserInputState == Enum.UserInputState.End then
-                    dragging = false
+                    Dragging = false
                 end
             end)
         end
     end)
     
-    circle.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement or 
-           input.UserInputType == Enum.UserInputType.Touch then
-            dragInput = input
+    gui.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement then
+            DragInput = input
         end
     end)
     
     UserInputService.InputChanged:Connect(function(input)
-        if dragging and (input == dragInput) then
-            update(input)
+        if input == DragInput and Dragging then
+            local delta = input.Position - DragStart
+            gui.Position = UDim2.new(
+                StartPos.X.Scale,
+                StartPos.X.Offset + delta.X,
+                StartPos.Y.Scale,
+                StartPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+-- Criar círculo principal
+local function CreateCircle()
+    CircleGui = Instance.new("ScreenGui")
+    CircleGui.Name = "GalaxyHubCircle"
+    CircleGui.ResetOnSpawn = false
+    CircleGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    
+    local CircleFrame = Instance.new("Frame")
+    CircleFrame.Name = "Circle"
+    CircleFrame.Size = UDim2.new(0, 50, 0, 50)
+    CircleFrame.Position = UDim2.new(0, CurrentConfig.CirclePosition.X, 0, CurrentConfig.CirclePosition.Y)
+    CircleFrame.BackgroundColor3 = Color3.fromRGB(63, 81, 181)
+    CircleFrame.BackgroundTransparency = 0.3
+    CircleFrame.BorderSizePixel = 0
+    
+    local UICorner = Instance.new("UICorner")
+    UICorner.CornerRadius = UDim.new(1, 0)
+    UICorner.Parent = CircleFrame
+    
+    local CircleImage = Instance.new("ImageLabel")
+    CircleImage.Name = "Icon"
+    CircleImage.Size = UDim2.new(0, 30, 0, 30)
+    CircleImage.Position = UDim2.new(0.5, -15, 0.5, -15)
+    CircleImage.BackgroundTransparency = 1
+    CircleImage.Image = "rbxassetid://0" -- ID da imagem personalizada
+    CircleImage.Parent = CircleFrame
+    
+    -- Salvar posição ao mover
+    CircleFrame.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            CurrentConfig.CirclePosition = {
+                X = CircleFrame.AbsolutePosition.X,
+                Y = CircleFrame.AbsolutePosition.Y
+            }
+            SaveConfig()
         end
     end)
     
-    -- Função de clique para abrir/fechar GUI
-    local clickCount = 0
-    local lastClickTime = 0
-    
-    circle.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or 
-           input.UserInputType == Enum.UserInputType.Touch then
-            
-            local currentTime = tick()
-            if currentTime - lastClickTime < 0.3 then
-                clickCount = clickCount + 1
-            else
-                clickCount = 1
-            end
-            lastClickTime = currentTime
-            
-            if clickCount == 2 then
-                clickCount = 0
-                guiEnabled = not guiEnabled
-                
-                if guiEnabled then
-                    -- Criar título
-                    title.Text = "Shift Lock\nMobile and PC"
-                    
-                    -- Criar GUI principal
-                    createMainGUI()
-                else
-                    -- Fechar GUI
-                    title.Text = "☺"
-                    if currentGui then
-                        currentGui:Destroy()
-                        currentGui = nil
-                    end
+    -- Toggle da GUI principal
+    local guiOpen = false
+    CircleFrame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            if guiOpen then
+                if MainGui then
+                    MainGui.Enabled = false
                 end
+                guiOpen = false
+            else
+                if MainGui then
+                    MainGui.Enabled = true
+                    MainGui.Enabled = false -- Forçar refresh
+                    task.wait()
+                    MainGui.Enabled = true
+                end
+                guiOpen = true
             end
         end
     end)
     
-    screenGui.Parent = player:WaitForChild("PlayerGui")
-    return screenGui
+    MakeDraggable(CircleFrame)
+    CircleFrame.Parent = CircleGui
+    CircleGui.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
 end
 
 -- Criar GUI principal
-local function createMainGUI()
-    if currentGui then
-        currentGui:Destroy()
-    end
+local function CreateMainGUI()
+    MainGui = Instance.new("ScreenGui")
+    MainGui.Name = "GalaxyHubMain"
+    MainGui.ResetOnSpawn = false
+    MainGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     
-    local gui = Instance.new("ScreenGui")
-    gui.Name = "BrainrotMainGUI"
-    gui.Parent = player:WaitForChild("PlayerGui")
-    currentGui = gui
+    local MainFrame = Instance.new("Frame")
+    MainFrame.Name = "MainFrame"
+    MainFrame.Size = UDim2.new(0, 450, 0, 500)
+    MainFrame.Position = UDim2.new(0.5, -225, 0.5, -250)
+    MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    MainFrame.BorderSizePixel = 0
     
-    local mainFrame = Instance.new("Frame")
-    mainFrame.Size = UDim2.new(0, 350, 0, 450)
-    mainFrame.Position = UDim2.new(0.5, -175, 0.5, -225)
-    mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
-    mainFrame.BorderSizePixel = 0
-    mainFrame.ClipsDescendants = true
+    -- Barra de título
+    local TitleBar = Instance.new("Frame")
+    TitleBar.Name = "TitleBar"
+    TitleBar.Size = UDim2.new(1, 0, 0, 30)
+    TitleBar.BackgroundColor3 = Color3.fromRGB(63, 81, 181)
+    TitleBar.BorderSizePixel = 0
     
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
-    corner.Parent = mainFrame
+    local Title = Instance.new("TextLabel")
+    Title.Name = "Title"
+    Title.Size = UDim2.new(0.7, 0, 1, 0)
+    Title.Position = UDim2.new(0, 10, 0, 0)
+    Title.BackgroundTransparency = 1
+    Title.Text = "Notifier Fruits"
+    Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 14
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Parent = TitleBar
     
-    -- Título
-    local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, 0, 0, 50)
-    title.BackgroundColor3 = Color3.fromRGB(0, 100, 200)
-    title.Text = "BRAINROT CONTROL SYSTEM"
-    title.TextColor3 = Color3.white
-    title.Font = Enum.Font.GothamBold
-    title.TextSize = 18
+    -- Botões da barra de título
+    local MinimizeButton = Instance.new("TextButton")
+    MinimizeButton.Name = "Minimize"
+    MinimizeButton.Size = UDim2.new(0, 30, 0, 30)
+    MinimizeButton.Position = UDim2.new(1, -90, 0, 0)
+    MinimizeButton.BackgroundTransparency = 1
+    MinimizeButton.Text = "_"
+    MinimizeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    MinimizeButton.Font = Enum.Font.GothamBold
+    MinimizeButton.TextSize = 16
     
-    local titleCorner = Instance.new("UICorner")
-    titleCorner.CornerRadius = UDim.new(0, 8)
-    titleCorner.Parent = title
+    local MaximizeButton = Instance.new("TextButton")
+    MaximizeButton.Name = "Maximize"
+    MaximizeButton.Size = UDim2.new(0, 30, 0, 30)
+    MaximizeButton.Position = UDim2.new(1, -60, 0, 0)
+    MaximizeButton.BackgroundTransparency = 1
+    MaximizeButton.Text = "□"
+    MaximizeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    MaximizeButton.Font = Enum.Font.GothamBold
+    MaximizeButton.TextSize = 14
     
-    -- Barra de pesquisa
-    local searchBox = Instance.new("TextBox")
-    searchBox.Size = UDim2.new(0.9, 0, 0, 35)
-    searchBox.Position = UDim2.new(0.05, 0, 0, 60)
-    searchBox.PlaceholderText = "Pesquisar modelos..."
-    searchBox.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
-    searchBox.TextColor3 = Color3.white
-    searchBox.Font = Enum.Font.Gotham
-    searchBox.TextSize = 14
+    local CloseButton = Instance.new("TextButton")
+    CloseButton.Name = "Close"
+    CloseButton.Size = UDim2.new(0, 30, 0, 30)
+    CloseButton.Position = UDim2.new(1, -30, 0, 0)
+    CloseButton.BackgroundTransparency = 1
+    CloseButton.Text = "X"
+    CloseButton.TextColor3 = Color3.fromRGB(255, 100, 100)
+    CloseButton.Font = Enum.Font.GothamBold
+    CloseButton.TextSize = 14
     
-    local searchCorner = Instance.new("UICorner")
-    searchCorner.CornerRadius = UDim.new(0, 4)
-    searchCorner.Parent = searchBox
+    -- Sistema de minimizar/maximizar
+    local minimized = false
+    local originalSize = MainFrame.Size
     
-    -- Frame de scroll para a lista
-    local scrollFrame = Instance.new("ScrollingFrame")
-    scrollFrame.Size = UDim2.new(0.9, 0, 0, 250)
-    scrollFrame.Position = UDim2.new(0.05, 0, 0, 110)
-    scrollFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
-    scrollFrame.BorderSizePixel = 0
-    scrollFrame.ScrollBarThickness = 6
-    scrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    
-    local scrollCorner = Instance.new("UICorner")
-    scrollCorner.CornerRadius = UDim.new(0, 4)
-    scrollCorner.Parent = scrollFrame
-    
-    -- Frame para os botões de função
-    local functionFrame = Instance.new("Frame")
-    functionFrame.Size = UDim2.new(0.9, 0, 0, 120)
-    functionFrame.Position = UDim2.new(0.05, 0, 0, 370)
-    functionFrame.BackgroundTransparency = 1
-    
-    -- Botão 1: Escolher modelo
-    local chooseBtn = Instance.new("TextButton")
-    chooseBtn.Size = UDim2.new(1, 0, 0, 35)
-    chooseBtn.Position = UDim2.new(0, 0, 0, 0)
-    chooseBtn.Text = "1. ESCOLHER MODELO"
-    chooseBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
-    chooseBtn.TextColor3 = Color3.white
-    chooseBtn.Font = Enum.Font.GothamBold
-    chooseBtn.TextSize = 14
-    
-    local chooseCorner = Instance.new("UICorner")
-    chooseCorner.CornerRadius = UDim.new(0, 4)
-    chooseCorner.Parent = chooseBtn
-    
-    -- Botão 2: Trazer brainrot
-    local catchBtn = Instance.new("TextButton")
-    catchBtn.Size = UDim2.new(1, 0, 0, 35)
-    catchBtn.Position = UDim2.new(0, 0, 0, 45)
-    catchBtn.Text = "2. CATCH BRAINROT"
-    catchBtn.BackgroundColor3 = Color3.fromRGB(40, 180, 40)
-    catchBtn.TextColor3 = Color3.white
-    catchBtn.Font = Enum.Font.GothamBold
-    catchBtn.TextSize = 14
-    
-    local catchCorner = Instance.new("UICorner")
-    catchCorner.CornerRadius = UDim.new(0, 4)
-    catchCorner.Parent = catchBtn
-    
-    -- Botão 3: Teleport automático
-    local autoTpBtn = Instance.new("TextButton")
-    autoTpBtn.Size = UDim2.new(0.48, 0, 0, 35)
-    autoTpBtn.Position = UDim2.new(0, 0, 0, 85)
-    autoTpBtn.Text = "3. AUTO TP"
-    autoTpBtn.BackgroundColor3 = Color3.fromRGB(180, 100, 0)
-    autoTpBtn.TextColor3 = Color3.white
-    autoTpBtn.Font = Enum.Font.GothamBold
-    autoTpBtn.TextSize = 12
-    
-    local autoTpCorner = Instance.new("UICorner")
-    autoTpCorner.CornerRadius = UDim.new(0, 4)
-    autoTpCorner.Parent = autoTpBtn
-    
-    -- Botão 4: Teleport manual
-    local manualTpBtn = Instance.new("TextButton")
-    manualTpBtn.Size = UDim2.new(0.48, 0, 0, 35)
-    manualTpBtn.Position = UDim2.new(0.52, 0, 0, 85)
-    manualTpBtn.Text = "4. MANUAL TP"
-    manualTpBtn.BackgroundColor3 = Color3.fromRGB(180, 60, 0)
-    manualTpBtn.TextColor3 = Color3.white
-    manualTpBtn.Font = Enum.Font.GothamBold
-    manualTpBtn.TextSize = 12
-    
-    local manualTpCorner = Instance.new("UICorner")
-    manualTpCorner.CornerRadius = UDim.new(0, 4)
-    manualTpCorner.Parent = manualTpBtn
-    
-    -- Texto do modelo selecionado
-    local selectedText = Instance.new("TextLabel")
-    selectedText.Size = UDim2.new(1, 0, 0, 20)
-    selectedText.Position = UDim2.new(0, 0, 0, 325)
-    selectedText.BackgroundTransparency = 1
-    selectedText.Text = "Nenhum modelo selecionado"
-    selectedText.TextColor3 = Color3.fromRGB(200, 200, 200)
-    selectedText.Font = Enum.Font.Gotham
-    selectedText.TextSize = 12
-    selectedText.TextXAlignment = Enum.TextXAlignment.Center
-    
-    -- Adicionar elementos à hierarquia
-    title.Parent = mainFrame
-    searchBox.Parent = mainFrame
-    scrollFrame.Parent = mainFrame
-    selectedText.Parent = mainFrame
-    
-    chooseBtn.Parent = functionFrame
-    catchBtn.Parent = functionFrame
-    autoTpBtn.Parent = functionFrame
-    manualTpBtn.Parent = functionFrame
-    functionFrame.Parent = mainFrame
-    
-    mainFrame.Parent = gui
-    
-    -- Variáveis para a lista
-    local listItems = {}
-    local selectedItem = nil
-    
-    -- Função para atualizar a lista
-    local function updateList(filter)
-        -- Limpar lista atual
-        for _, item in ipairs(listItems) do
-            item:Destroy()
+    MinimizeButton.MouseButton1Click:Connect(function()
+        if not minimized then
+            MainFrame.Size = UDim2.new(0, 450, 0, 30)
+            minimized = true
         end
-        listItems = {}
+    end)
+    
+    MaximizeButton.MouseButton1Click:Connect(function()
+        if minimized then
+            MainFrame.Size = originalSize
+            minimized = false
+        end
+    end)
+    
+    CloseButton.MouseButton1Click:Connect(function()
+        MainGui.Enabled = false
+    end)
+    
+    MinimizeButton.Parent = TitleBar
+    MaximizeButton.Parent = TitleBar
+    CloseButton.Parent = TitleBar
+    TitleBar.Parent = MainFrame
+    
+    -- Abas
+    local TabContainer = Instance.new("Frame")
+    TabContainer.Name = "TabContainer"
+    TabContainer.Size = UDim2.new(1, -20, 1, -50)
+    TabContainer.Position = UDim2.new(0, 10, 0, 40)
+    TabContainer.BackgroundTransparency = 1
+    
+    local TabButtons = Instance.new("Frame")
+    TabButtons.Name = "TabButtons"
+    TabButtons.Size = UDim2.new(1, 0, 0, 30)
+    TabButtons.BackgroundTransparency = 1
+    
+    local Tabs = {"Aimbot", "Server Hop Fruits", "Esp Fruits"}
+    local TabFrames = {}
+    
+    for i, tabName in ipairs(Tabs) do
+        local TabButton = Instance.new("TextButton")
+        TabButton.Name = tabName .. "Tab"
+        TabButton.Size = UDim2.new(1/3, -2, 1, 0)
+        TabButton.Position = UDim2.new((i-1)/3, 0, 0, 0)
+        TabButton.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+        TabButton.BorderSizePixel = 0
+        TabButton.Text = tabName
+        TabButton.TextColor3 = Color3.fromRGB(200, 200, 200)
+        TabButton.Font = Enum.Font.Gotham
+        TabButton.TextSize = 12
         
-        -- Filtrar modelos
-        local filteredModels = {}
-        if filter and filter ~= "" then
-            local lowerFilter = filter:lower()
-            for _, modelData in ipairs(modelCache) do
-                if modelData.Name:lower():find(lowerFilter, 1, true) then
-                    table.insert(filteredModels, modelData)
+        local TabContent = Instance.new("ScrollingFrame")
+        TabContent.Name = tabName .. "Content"
+        TabContent.Size = UDim2.new(1, 0, 1, -40)
+        TabContent.Position = UDim2.new(0, 0, 0, 40)
+        TabContent.BackgroundTransparency = 1
+        TabContent.BorderSizePixel = 0
+        TabContent.ScrollBarThickness = 6
+        TabContent.Visible = i == 1
+        TabContent.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        
+        local UIListLayout = Instance.new("UIListLayout")
+        UIListLayout.Parent = TabContent
+        UIListLayout.Padding = UDim.new(0, 5)
+        
+        TabButton.MouseButton1Click:Connect(function()
+            for _, frame in pairs(TabFrames) do
+                frame.Visible = false
+            end
+            TabContent.Visible = true
+            
+            for _, btn in pairs(TabButtons:GetChildren()) do
+                if btn:IsA("TextButton") then
+                    btn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
                 end
             end
-        else
-            filteredModels = modelCache
+            TabButton.BackgroundColor3 = Color3.fromRGB(63, 81, 181)
+        end)
+        
+        if i == 1 then
+            TabButton.BackgroundColor3 = Color3.fromRGB(63, 81, 181)
         end
         
-        -- Criar novos itens
-        local yOffset = 0
-        local itemHeight = 30
+        TabButton.Parent = TabButtons
+        TabContent.Parent = TabContainer
+        TabFrames[tabName] = TabContent
+    end
+    
+    TabButtons.Parent = TabContainer
+    
+    -- Conteúdo das abas
+    -- Aba 1: Aimbot
+    local AimbotTab = TabFrames["Aimbot"]
+    
+    local AimbotToggle = Instance.new("TextButton")
+    AimbotToggle.Name = "AimbotToggle"
+    AimbotToggle.Size = UDim2.new(1, -20, 0, 35)
+    AimbotToggle.Position = UDim2.new(0, 10, 0, 10)
+    AimbotToggle.BackgroundColor3 = Color3.fromRGB(63, 81, 181)
+    AimbotToggle.BorderSizePixel = 0
+    AimbotToggle.Text = "Aimbot: OFF"
+    AimbotToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    AimbotToggle.Font = Enum.Font.Gotham
+    AimbotToggle.TextSize = 14
+    
+    AimbotToggle.MouseButton1Click:Connect(function()
+        AimbotEnabled = not AimbotEnabled
+        AimbotToggle.Text = "Aimbot: " .. (AimbotEnabled and "ON" or "OFF")
+        AimbotToggle.BackgroundColor3 = AimbotEnabled and Color3.fromRGB(76, 175, 80) or Color3.fromRGB(63, 81, 181)
         
-        for i, modelData in ipairs(filteredModels) do
-            local itemFrame = Instance.new("Frame")
-            itemFrame.Size = UDim2.new(1, -10, 0, itemHeight)
-            itemFrame.Position = UDim2.new(0, 5, 0, yOffset)
-            itemFrame.BackgroundColor3 = i % 2 == 0 and Color3.fromRGB(50, 50, 60) 
-                                                     or Color3.fromRGB(45, 45, 55)
-            itemFrame.BorderSizePixel = 0
+        if AimbotEnabled then
+            CreateAimbotButton()
+        elseif AimbotButton then
+            AimbotButton:Destroy()
+            AimbotButton = nil
+        end
+        
+        SaveConfig()
+    end)
+    
+    AimbotToggle.Parent = AimbotTab
+    
+    -- Aba 2: Server Hop Fruits
+    local ServerHopTab = TabFrames["Server Hop Fruits"]
+    
+    -- Whitelist
+    local WhitelistLabel = Instance.new("TextLabel")
+    WhitelistLabel.Text = "Whitelist Fruits:"
+    WhitelistLabel.Size = UDim2.new(1, -20, 0, 20)
+    WhitelistLabel.Position = UDim2.new(0, 10, 0, 10)
+    WhitelistLabel.BackgroundTransparency = 1
+    WhitelistLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    WhitelistLabel.Font = Enum.Font.Gotham
+    WhitelistLabel.TextSize = 12
+    WhitelistLabel.TextXAlignment = Enum.TextXAlignment.Left
+    WhitelistLabel.Parent = ServerHopTab
+    
+    local WhitelistFrame = Instance.new("Frame")
+    WhitelistFrame.Size = UDim2.new(1, -20, 0, 100)
+    WhitelistFrame.Position = UDim2.new(0, 10, 0, 35)
+    WhitelistFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    WhitelistFrame.BorderSizePixel = 0
+    
+    local WhitelistScrolling = Instance.new("ScrollingFrame")
+    WhitelistScrolling.Size = UDim2.new(1, -10, 1, -10)
+    WhitelistScrolling.Position = UDim2.new(0, 5, 0, 5)
+    WhitelistScrolling.BackgroundTransparency = 1
+    WhitelistScrolling.ScrollBarThickness = 6
+    WhitelistScrolling.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    
+    local WhitelistLayout = Instance.new("UIListLayout")
+    WhitelistLayout.Parent = WhitelistScrolling
+    
+    local AddWhitelist = Instance.new("TextButton")
+    AddWhitelist.Text = "+ Add Fruit"
+    AddWhitelist.Size = UDim2.new(1, 0, 0, 25)
+    AddWhitelist.BackgroundColor3 = Color3.fromRGB(63, 81, 181)
+    AddWhitelist.TextColor3 = Color3.fromRGB(255, 255, 255)
+    AddWhitelist.Font = Enum.Font.Gotham
+    AddWhitelist.TextSize = 12
+    AddWhitelist.Parent = WhitelistScrolling
+    
+    AddWhitelist.MouseButton1Click:Connect(function()
+        local input = Instance.new("TextBox")
+        input.Size = UDim2.new(1, 0, 0, 25)
+        input.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+        input.TextColor3 = Color3.fromRGB(255, 255, 255)
+        input.Font = Enum.Font.Gotham
+        input.TextSize = 12
+        input.PlaceholderText = "Enter fruit name..."
+        input.Parent = WhitelistScrolling
+        
+        input.FocusLost:Connect(function(enterPressed)
+            if enterPressed and input.Text ~= "" then
+                table.insert(Whitelist, input.Text)
+                SaveConfig()
+                UpdateWhitelistDisplay()
+            end
+            input:Destroy()
+        end)
+    end)
+    
+    WhitelistScrolling.Parent = WhitelistFrame
+    WhitelistFrame.Parent = ServerHopTab
+    
+    -- Blacklist (similar à whitelist)
+    local BlacklistLabel = Instance.new("TextLabel")
+    BlacklistLabel.Text = "Blacklist Fruits (Optional):"
+    BlacklistLabel.Size = UDim2.new(1, -20, 0, 20)
+    BlacklistLabel.Position = UDim2.new(0, 10, 0, 145)
+    BlacklistLabel.BackgroundTransparency = 1
+    BlacklistLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    BlacklistLabel.Font = Enum.Font.Gotham
+    BlacklistLabel.TextSize = 12
+    BlacklistLabel.TextXAlignment = Enum.TextXAlignment.Left
+    BlacklistLabel.Parent = ServerHopTab
+    
+    -- Configurações de teleporte
+    local AutoTpToggle = Instance.new("TextButton")
+    AutoTpToggle.Name = "AutoTpToggle"
+    AutoTpToggle.Text = "AutoTp Server Whitelist: OFF"
+    AutoTpToggle.Size = UDim2.new(1, -20, 0, 35)
+    AutoTpToggle.Position = UDim2.new(0, 10, 0, 250)
+    AutoTpToggle.BackgroundColor3 = Color3.fromRGB(63, 81, 181)
+    AutoTpToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    AutoTpToggle.Font = Enum.Font.Gotham
+    AutoTpToggle.TextSize = 12
+    
+    AutoTpToggle.MouseButton1Click:Connect(function()
+        CurrentConfig.AutoTpWhitelist = not CurrentConfig.AutoTpWhitelist
+        AutoTpToggle.Text = "AutoTp Server Whitelist: " .. (CurrentConfig.AutoTpWhitelist and "ON" or "OFF")
+        AutoTpToggle.BackgroundColor3 = CurrentConfig.AutoTpWhitelist and Color3.fromRGB(76, 175, 80) or Color3.fromRGB(63, 81, 181)
+        SaveConfig()
+    end)
+    
+    AutoTpToggle.Parent = ServerHopTab
+    
+    local AutoOffTpToggle = Instance.new("TextButton")
+    AutoOffTpToggle.Name = "AutoOffTpToggle"
+    AutoOffTpToggle.Text = "AutoOFF_TP Whitelist: OFF"
+    AutoOffTpToggle.Size = UDim2.new(1, -20, 0, 35)
+    AutoOffTpToggle.Position = UDim2.new(0, 10, 0, 295)
+    AutoOffTpToggle.BackgroundColor3 = Color3.fromRGB(63, 81, 181)
+    AutoOffTpToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    AutoOffTpToggle.Font = Enum.Font.Gotham
+    AutoOffTpToggle.TextSize = 12
+    
+    AutoOffTpToggle.MouseButton1Click:Connect(function()
+        CurrentConfig.AutoOffTpWhitelist = not CurrentConfig.AutoOffTpWhitelist
+        AutoOffTpToggle.Text = "AutoOFF_TP Whitelist: " .. (CurrentConfig.AutoOffTpWhitelist and "ON" or "OFF")
+        AutoOffTpToggle.BackgroundColor3 = CurrentConfig.AutoOffTpWhitelist and Color3.fromRGB(76, 175, 80) or Color3.fromRGB(63, 81, 181)
+        SaveConfig()
+    end)
+    
+    AutoOffTpToggle.Parent = ServerHopTab
+    
+    -- Botão Start Server
+    local StartServerButton = Instance.new("TextButton")
+    StartServerButton.Name = "StartServer"
+    StartServerButton.Text = "Start Server Hop"
+    StartServerButton.Size = UDim2.new(1, -20, 0, 40)
+    StartServerButton.Position = UDim2.new(0, 10, 0, 340)
+    StartServerButton.BackgroundColor3 = Color3.fromRGB(76, 175, 80)
+    StartServerButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    StartServerButton.Font = Enum.Font.GothamBold
+    StartServerButton.TextSize = 14
+    
+    StartServerButton.MouseButton1Click:Connect(function()
+        StartServerHop()
+    end)
+    
+    StartServerButton.Parent = ServerHopTab
+    
+    -- Auto AFK
+    local AutoAfkToggle = Instance.new("TextButton")
+    AutoAfkToggle.Name = "AutoAfkToggle"
+    AutoAfkToggle.Text = "Auto AFK: OFF"
+    AutoAfkToggle.Size = UDim2.new(1, -20, 0, 35)
+    AutoAfkToggle.Position = UDim2.new(0, 10, 0, 390)
+    AutoAfkToggle.BackgroundColor3 = Color3.fromRGB(63, 81, 181)
+    AutoAfkToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    AutoAfkToggle.Font = Enum.Font.Gotham
+    AutoAfkToggle.TextSize = 12
+    
+    AutoAfkToggle.MouseButton1Click:Connect(function()
+        AutoAfkEnabled = not AutoAfkEnabled
+        AutoAfkToggle.Text = "Auto AFK: " .. (AutoAfkEnabled and "ON" or "OFF")
+        AutoAfkToggle.BackgroundColor3 = AutoAfkEnabled and Color3.fromRGB(76, 175, 80) or Color3.fromRGB(63, 81, 181)
+        
+        if AutoAfkEnabled then
+            StartAutoAFK()
+        end
+        
+        SaveConfig()
+    end)
+    
+    AutoAfkToggle.Parent = ServerHopTab
+    
+    local WebhookInput = Instance.new("TextBox")
+    WebhookInput.Name = "WebhookInput"
+    WebhookInput.PlaceholderText = "Discord Webhook URL"
+    WebhookInput.Text = CurrentConfig.WebhookUrl or ""
+    WebhookInput.Size = UDim2.new(1, -20, 0, 30)
+    WebhookInput.Position = UDim2.new(0, 10, 0, 435)
+    WebhookInput.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+    WebhookInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+    WebhookInput.Font = Enum.Font.Gotham
+    WebhookInput.TextSize = 12
+    
+    WebhookInput.FocusLost:Connect(function()
+        CurrentConfig.WebhookUrl = WebhookInput.Text
+        SaveConfig()
+    end)
+    
+    WebhookInput.Parent = ServerHopTab
+    
+    -- Aba 3: ESP Fruits
+    local EspTab = TabFrames["Esp Fruits"]
+    
+    local EspToggle = Instance.new("TextButton")
+    EspToggle.Name = "EspToggle"
+    EspToggle.Text = "ESP Fruits: OFF"
+    EspToggle.Size = UDim2.new(1, -20, 0, 35)
+    EspToggle.Position = UDim2.new(0, 10, 0, 10)
+    EspToggle.BackgroundColor3 = Color3.fromRGB(63, 81, 181)
+    EspToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+    EspToggle.Font = Enum.Font.Gotham
+    EspToggle.TextSize = 14
+    
+    EspToggle.MouseButton1Click:Connect(function()
+        EspEnabled = not EspEnabled
+        EspToggle.Text = "ESP Fruits: " .. (EspEnabled and "ON" or "OFF")
+        EspToggle.BackgroundColor3 = EspEnabled and Color3.fromRGB(76, 175, 80) or Color3.fromRGB(63, 81, 181)
+        
+        if not EspEnabled then
+            ClearEsp()
+        else
+            UpdateEsp()
+        end
+        
+        SaveConfig()
+    end)
+    
+    EspToggle.Parent = EspTab
+    
+    -- Funções auxiliares para atualizar displays
+    function UpdateWhitelistDisplay()
+        for _, child in pairs(WhitelistScrolling:GetChildren()) do
+            if child.Name ~= "AddButton" then
+                child:Destroy()
+            end
+        end
+        
+        for i, fruit in ipairs(Whitelist) do
+            local item = Instance.new("Frame")
+            item.Size = UDim2.new(1, 0, 0, 25)
+            item.BackgroundColor3 = Color3.fromRGB(55, 55, 65)
             
-            local itemCorner = Instance.new("UICorner")
-            itemCorner.CornerRadius = UDim.new(0, 4)
-            itemCorner.Parent = itemFrame
+            local label = Instance.new("TextLabel")
+            label.Text = fruit
+            label.Size = UDim2.new(0.8, 0, 1, 0)
+            label.BackgroundTransparency = 1
+            label.TextColor3 = Color3.fromRGB(255, 255, 255)
+            label.Font = Enum.Font.Gotham
+            label.TextSize = 12
+            label.TextXAlignment = Enum.TextXAlignment.Left
+            label.Parent = item
             
-            local itemText = Instance.new("TextLabel")
-            itemText.Size = UDim2.new(1, 0, 1, 0)
-            itemText.BackgroundTransparency = 1
-            itemText.Text = modelData.Name
-            itemText.TextColor3 = Color3.white
-            itemText.Font = Enum.Font.Gotham
-            itemText.TextSize = 12
-            itemText.TextXAlignment = Enum.TextXAlignment.Left
-            itemText.PaddingLeft = UDim.new(0, 10)
-            itemText.Parent = itemFrame
+            local removeBtn = Instance.new("TextButton")
+            removeBtn.Text = "X"
+            removeBtn.Size = UDim2.new(0, 25, 0, 25)
+            removeBtn.Position = UDim2.new(1, -25, 0, 0)
+            removeBtn.BackgroundColor3 = Color3.fromRGB(255, 100, 100)
+            removeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            removeBtn.Font = Enum.Font.Gotham
+            removeBtn.TextSize = 12
+            removeBtn.Parent = item
             
-            local selectBtn = Instance.new("TextButton")
-            selectBtn.Size = UDim2.new(0, 80, 0, 20)
-            selectBtn.Position = UDim2.new(1, -85, 0.5, -10)
-            selectBtn.Text = "SELECIONAR"
-            selectBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
-            selectBtn.TextColor3 = Color3.white
-            selectBtn.Font = Enum.Font.GothamBold
-            selectBtn.TextSize = 10
-            selectBtn.Parent = itemFrame
-            
-            local btnCorner = Instance.new("UICorner")
-            btnCorner.CornerRadius = UDim.new(0, 4)
-            btnCorner.Parent = selectBtn
-            
-            -- Função de seleção
-            selectBtn.MouseButton1Click:Connect(function()
-                if selectedItem then
-                    selectedItem.BackgroundColor3 = selectedItem.Name:find("Selected") and 
-                                                    Color3.fromRGB(60, 60, 70) or
-                                                    (tonumber(selectedItem.Name:match("%d+")) % 2 == 0 and 
-                                                     Color3.fromRGB(50, 50, 60) or 
-                                                     Color3.fromRGB(45, 45, 55))
-                end
-                
-                selectedItem = itemFrame
-                selectedModelName = modelData.Name
-                selectedText.Text = "Selecionado: " .. modelData.Name
-                itemFrame.BackgroundColor3 = Color3.fromRGB(0, 100, 180)
-                
-                -- Fechar GUI após seleção
-                task.wait(0.3)
-                guiEnabled = false
-                gui:Destroy()
-                currentGui = nil
-                
-                -- Atualizar título do círculo
-                local playerGui = player:WaitForChild("PlayerGui")
-                local brainrotControl = playerGui:FindFirstChild("BrainrotControl")
-                if brainrotControl then
-                    local circle = brainrotControl:FindFirstChild("DragCircle")
-                    if circle then
-                        circle.Title.Text = "☺"
-                    end
-                end
+            removeBtn.MouseButton1Click:Connect(function()
+                table.remove(Whitelist, i)
+                SaveConfig()
+                UpdateWhitelistDisplay()
             end)
             
-            itemFrame.Parent = scrollFrame
-            table.insert(listItems, itemFrame)
-            
-            yOffset = yOffset + itemHeight + 2
+            item.Parent = WhitelistScrolling
         end
-        
-        scrollFrame.CanvasSize = UDim2.new(0, 0, 0, yOffset)
     end
     
-    -- Configurar barra de pesquisa
-    searchBox:GetPropertyChangedSignal("Text"):Connect(function()
-        updateList(searchBox.Text)
-    end)
+    UpdateWhitelistDisplay()
     
-    -- Inicializar lista
-    updateList("")
+    MakeDraggable(MainFrame)
+    MainFrame.Parent = MainGui
+    MainGui.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+end
+
+-- Sistema Aimbot
+function CreateAimbotButton()
+    if AimbotButton then return end
     
-    -- FUNÇÃO 1: Sistema de escolha (já implementado acima)
+    AimbotButton = Instance.new("ScreenGui")
+    AimbotButton.Name = "AimbotButtonGui"
+    AimbotButton.ResetOnSpawn = false
     
-    -- FUNÇÃO 2: Catch brainrot
-    catchBtn.MouseButton1Click:Connect(function()
-        if not selectedModelName then
-            selectedText.Text = "Selecione um modelo primeiro!"
-            selectedText.TextColor3 = Color3.fromRGB(255, 50, 50)
-            task.wait(1)
-            selectedText.TextColor3 = Color3.fromRGB(200, 200, 200)
-            return
-        end
+    local Button = Instance.new("TextButton")
+    Button.Name = "AimbotButton"
+    Button.Size = UDim2.new(0, 50, 0, 50)
+    Button.Position = UDim2.new(0, 200, 0, 200)
+    Button.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+    Button.TextColor3 = Color3.fromRGB(255, 255, 255)
+    Button.Text = "AIM"
+    Button.Font = Enum.Font.GothamBold
+    Button.TextSize = 12
+    
+    local aimbotActive = false
+    
+    Button.MouseButton1Click:Connect(function()
+        aimbotActive = not aimbotActive
+        Button.BackgroundColor3 = aimbotActive and Color3.fromRGB(50, 255, 50) or Color3.fromRGB(255, 50, 50)
         
-        -- Encontrar o modelo
-        local targetModel = nil
-        for _, modelData in ipairs(modelCache) do
-            if modelData.Name == selectedModelName then
-                targetModel = modelData.Model
-                break
-            end
-        end
-        
-        if targetModel then
-            -- Teleportar modelo para a posição do jogador
-            local humanoidRootPart = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-            if humanoidRootPart then
-                targetModel:PivotTo(humanoidRootPart.CFrame + Vector3.new(0, 0, -10))
-                selectedText.Text = "Modelo trazido: " .. selectedModelName
-                selectedText.TextColor3 = Color3.fromRGB(50, 255, 50)
-                task.wait(1)
-                selectedText.TextColor3 = Color3.fromRGB(200, 200, 200)
-            end
+        if aimbotActive then
+            StartAimbot()
+        else
+            AimbotTarget = nil
         end
     end)
     
-    -- FUNÇÃO 3: Teleport automático
-    autoTpBtn.MouseButton1Click:Connect(function()
-        if not selectedModelName then
-            selectedText.Text = "Selecione um modelo primeiro!"
-            selectedText.TextColor3 = Color3.fromRGB(255, 50, 50)
-            task.wait(1)
-            selectedText.TextColor3 = Color3.fromRGB(200, 200, 200)
-            return
-        end
-        
-        -- Encontrar o modelo
-        local targetModel = nil
-        for _, modelData in ipairs(modelCache) do
-            if modelData.Name == selectedModelName then
-                targetModel = modelData.Model
-                break
+    MakeDraggable(Button)
+    Button.Parent = AimbotButton
+    AimbotButton.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+end
+
+function StartAimbot()
+    spawn(function()
+        while AimbotEnabled and AimbotButton and AimbotButton:FindFirstChild("AimbotButton") do
+            local button = AimbotButton:FindFirstChild("AimbotButton")
+            if button and button.BackgroundColor3 == Color3.fromRGB(50, 255, 50) then
+                FindNearestTarget()
             end
-        end
-        
-        if targetModel then
-            local character = player.Character
-            local humanoidRootPart = character and character:FindFirstChild("HumanoidRootPart")
-            local spawnLocation = nil
-            
-            -- Encontrar spawn point
-            for _, spawn in ipairs(Workspace:GetChildren()) do
-                if spawn.Name == "SpawnLocation" or spawn:IsA("SpawnLocation") then
-                    spawnLocation = spawn
-                    break
-                end
-            end
-            
-            if humanoidRootPart and spawnLocation then
-                -- Salvar posição original
-                local originalPosition = humanoidRootPart.CFrame
-                
-                -- Teleportar para o modelo
-                humanoidRootPart.CFrame = targetModel:GetPivot() + Vector3.new(0, 5, 0)
-                selectedText.Text = "Teleportado para: " .. selectedModelName
-                
-                -- Sistema de detecção de atualização do modelo
-                local connection
-                connection = targetModel.Changed:Connect(function()
-                    -- Quando o modelo for atualizado, teleportar de volta
-                    humanoidRootPart.CFrame = spawnLocation.CFrame
-                    selectedText.Text = "Retornado ao spawn (atualização detectada)"
-                    
-                    -- Esperar e teleportar novamente (método alternativo)
-                    task.wait(5)
-                    humanoidRootPart.CFrame = spawnLocation.CFrame
-                    
-                    -- Limpar conexão
-                    if connection then
-                        connection:Disconnect()
-                    end
-                end)
-                
-                -- Também usar método alternativo
-                task.wait(5)
-                humanoidRootPart.CFrame = spawnLocation.CFrame
-                
-                task.wait(1)
-                selectedText.Text = "Teleport automático completo"
-            end
-        end
-    end)
-    
-    -- FUNÇÃO 4: Teleport manual
-    manualTpBtn.MouseButton1Click:Connect(function()
-        if not selectedModelName then
-            selectedText.Text = "Selecione um modelo primeiro!"
-            selectedText.TextColor3 = Color3.fromRGB(255, 50, 50)
-            task.wait(1)
-            selectedText.TextColor3 = Color3.fromRGB(200, 200, 200)
-            return
-        end
-        
-        -- Encontrar o modelo
-        local targetModel = nil
-        for _, modelData in ipairs(modelCache) do
-            if modelData.Name == selectedModelName then
-                targetModel = modelData.Model
-                break
-            end
-        end
-        
-        if targetModel then
-            local character = player.Character
-            local humanoidRootPart = character and character:FindFirstChild("HumanoidRootPart")
-            
-            if humanoidRootPart then
-                -- Método 1: Verificar atualização
-                local updateDetected = false
-                local connection = targetModel.Changed:Connect(function()
-                    updateDetected = true
-                end)
-                
-                -- Teleportar para o modelo
-                humanoidRootPart.CFrame = targetModel:GetPivot() + Vector3.new(0, 5, 0)
-                selectedText.Text = "Teleport manual para: " .. selectedModelName
-                
-                -- Método 2: Clique manual para retornar
-                manualTpBtn.Text = "CLIQUE PARA RETORNAR"
-                manualTpBtn.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
-                
-                local clickConnection
-                clickConnection = manualTpBtn.MouseButton1Click:Connect(function()
-                    -- Encontrar spawn
-                    local spawnLocation = nil
-                    for _, spawn in ipairs(Workspace:GetChildren()) do
-                        if spawn.Name == "SpawnLocation" or spawn:IsA("SpawnLocation") then
-                            spawnLocation = spawn
-                            break
-                        end
-                    end
-                    
-                    if spawnLocation then
-                        humanoidRootPart.CFrame = spawnLocation.CFrame
-                        selectedText.Text = "Retornado manualmente ao spawn"
-                        
-                        -- Resetar botão
-                        task.wait(0.5)
-                        manualTpBtn.Text = "4. MANUAL TP"
-                        manualTpBtn.BackgroundColor3 = Color3.fromRGB(180, 60, 0)
-                        
-                        -- Limpar conexões
-                        if connection then connection:Disconnect() end
-                        if clickConnection then clickConnection:Disconnect() end
-                    end
-                end)
-                
-                -- Se detectar atualização, retornar automaticamente
-                if updateDetected then
-                    local spawnLocation = nil
-                    for _, spawn in ipairs(Workspace:GetChildren()) do
-                        if spawn.Name == "SpawnLocation" or spawn:IsA("SpawnLocation") then
-                            spawnLocation = spawn
-                            break
-                        end
-                    end
-                    
-                    if spawnLocation then
-                        humanoidRootPart.CFrame = spawnLocation.CFrame
-                        selectedText.Text = "Retornado (atualização detectada)"
-                        
-                        -- Resetar botão
-                        manualTpBtn.Text = "4. MANUAL TP"
-                        manualTpBtn.BackgroundColor3 = Color3.fromRGB(180, 60, 0)
-                        
-                        if connection then connection:Disconnect() end
-                        if clickConnection then clickConnection:Disconnect() end
-                    end
-                end
-            end
+            task.wait(0.1)
         end
     end)
 end
 
--- Inicializar sistema
-local function initialize()
-    -- Encontrar pasta ActiveBrainrots
-    findBrainrotFolder()
+function FindNearestTarget()
+    local nearest = nil
+    local nearestDist = 20
     
-    if brainrotFolder then
-        print("Sistema Brainrot inicializado!")
-        print("Modelos encontrados: " .. #modelCache)
-        
-        for _, modelData in ipairs(modelCache) do
-            print("  - " .. modelData.Name .. " (Pasta: " .. modelData.FolderName .. ")")
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local humanoid = player.Character:FindFirstChild("Humanoid")
+            local head = player.Character:FindFirstChild("Head")
+            
+            if humanoid and humanoid.Health > 0 and head then
+                local dist = (head.Position - LocalPlayer.Character.Head.Position).Magnitude
+                if dist <= nearestDist then
+                    nearest = player
+                    nearestDist = dist
+                end
+            end
         end
-    else
-        print("Pasta ActiveBrainrots não encontrada. Sistema em modo limitado.")
     end
     
-    -- Criar círculo arrastável
-    createDragCircle()
-    
-    print("\nInstruções:")
-    print("1. Clique duplo no círculo azul para abrir/fechar o menu")
-    print("2. Use a barra de pesquisa para filtrar modelos")
-    print("3. Selecione um modelo clicando em 'SELECIONAR'")
-    print("4. Use os 4 botões de função para controlar os modelos")
+    AimbotTarget = nearest
+    if AimbotTarget then
+        AimAtTarget(AimbotTarget)
+    end
 end
 
--- Executar inicialização
-task.spawn(initialize)
+function AimAtTarget(target)
+    if not target or not target.Character then return end
+    
+    local head = target.Character:FindFirstChild("Head")
+    if head and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        local root = LocalPlayer.Character.HumanoidRootPart
+        root.CFrame = CFrame.new(root.Position, head.Position)
+    end
+end
 
-return {
-    RefreshModels = findBrainrotFolder,
-    GetSelectedModel = function() return selectedModelName end,
-    GetModelCache = function() return modelCache end
-}
+-- Sistema ESP
+function UpdateEsp()
+    spawn(function()
+        while EspEnabled do
+            ClearEsp()
+            
+            local fruits = FindFruitInWorld()
+            
+            for _, fruit in ipairs(fruits) do
+                if fruit.Object and fruit.Object.Parent then
+                    CreateEsp(fruit.Object, fruit.Name, fruit.Rarity)
+                end
+            end
+            
+            task.wait(1)
+        end
+    end)
+end
+
+function CreateEsp(object, name, rarity)
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "GalaxyHubESP"
+    highlight.Adornee = object
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    
+    local colorMap = {
+        COMMON = Color3.fromRGB(200, 200, 200),
+        UNCOMMON = Color3.fromRGB(100, 200, 100),
+        RARE = Color3.fromRGB(100, 100, 255),
+        LEGENDARY = Color3.fromRGB(255, 165, 0),
+        MYTHICAL = Color3.fromRGB(255, 50, 255)
+    }
+    
+    highlight.FillColor = colorMap[rarity] or Color3.fromRGB(255, 255, 255)
+    highlight.OutlineColor = highlight.FillColor
+    highlight.FillTransparency = 0.5
+    highlight.OutlineTransparency = 0
+    
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "GalaxyHubESPText"
+    billboard.Size = UDim2.new(0, 200, 0, 50)
+    billboard.StudsOffset = Vector3.new(0, 3, 0)
+    billboard.AlwaysOnTop = true
+    billboard.Adornee = object
+    
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Size = UDim2.new(1, 0, 1, 0)
+    textLabel.BackgroundTransparency = 1
+    textLabel.Text = name .. "\n" .. rarity
+    textLabel.TextColor3 = highlight.FillColor
+    textLabel.Font = Enum.Font.GothamBold
+    textLabel.TextSize = 14
+    textLabel.TextStrokeTransparency = 0
+    textLabel.Parent = billboard
+    
+    billboard.Parent = object
+    highlight.Parent = object
+    
+    table.insert(FruitEsp, {highlight = highlight, billboard = billboard})
+end
+
+function ClearEsp()
+    for _, esp in pairs(FruitEsp) do
+        if esp.highlight then esp.highlight:Destroy() end
+        if esp.billboard then esp.billboard:Destroy() end
+    end
+    FruitEsp = {}
+end
+
+-- Sistema Server Hop
+function StartServerHop()
+    AutoServerHopEnabled = true
+    
+    spawn(function()
+        while AutoServerHopEnabled do
+            local fruits = FindFruitInWorld()
+            local foundWhitelistFruit = false
+            local foundFruits = {}
+            
+            for _, fruit in ipairs(fruits) do
+                -- Verificar whitelist
+                for _, wfruit in ipairs(Whitelist) do
+                    if fruit.Name:lower() == wfruit:lower() then
+                        foundWhitelistFruit = true
+                        table.insert(foundFruits, fruit.Name)
+                        break
+                    end
+                end
+                
+                -- Verificar blacklist
+                if CurrentConfig.AutoTpWhitelist then
+                    for _, bfruit in ipairs(Blacklist) do
+                        if fruit.Name:lower() == bfruit:lower() then
+                            ServerHop()
+                            return
+                        end
+                    end
+                end
+            end
+            
+            -- Lógica de notificação e coleta
+            if foundWhitelistFruit then
+                NotificationsSent = NotificationsSent + 1
+                
+                if NotificationsSent <= 3 then
+                    SendDiscordNotification(foundFruits)
+                else
+                    if FruitsCollected < 3 then
+                        CollectFruits(fruits)
+                        FruitsCollected = FruitsCollected + 1
+                    else
+                        NotificationsSent = 0
+                        FruitsCollected = 0
+                    end
+                end
+            else
+                ServerHop()
+            end
+            
+            task.wait(5)
+        end
+    end)
+end
+
+function ServerHop()
+    local servers = {}
+    local success, result = pcall(function()
+        return game:GetService("HttpService"):JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?limit=100"))
+    end)
+    
+    if success and result.data then
+        for _, server in pairs(result.data) do
+            if server.id ~= game.JobId and server.playing < server.maxPlayers then
+                table.insert(servers, server.id)
+            end
+        end
+        
+        if #servers > 0 then
+            local randomServer = servers[math.random(1, #servers)]
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, randomServer)
+        end
+    end
+end
+
+function SendDiscordNotification(fruits)
+    if not CurrentConfig.WebhookUrl or CurrentConfig.WebhookUrl == "" then return end
+    
+    local players = #Players:GetPlayers()
+    local jobId = game.JobId
+    local time = os.date("%Y-%m-%d %H:%M:%S")
+    
+    local message = {
+        content = "@everyone @here ⭐ | VIP Silver\nNova fruta encontrada, pelo radar GalaxyScripts",
+        embeds = {{
+            title = "Fruit Notification",
+            fields = {
+                {name = "Job Id mobile📱:", value = jobId, inline = true},
+                {name = "Job Id Pc💻:", value = jobId, inline = true},
+                {name = "Players in server👤👤:", value = players, inline = true},
+                {name = "Link job id💻📱🆔:", value = "[Clique for The Server](https://www.roblox.com/games/start?placeId=" .. game.PlaceId .. "&gameInstanceId=" .. jobId .. ")", inline = false},
+                {name = "Date and time⏳:", value = time, inline = true},
+                {name = "Fruit(s)🍎📊:", value = table.concat(fruits, "\n"), inline = false}
+            },
+            color = 0x3F51B5,
+            timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
+        }}
+    }
+    
+    pcall(function()
+        game:GetService("HttpService"):PostAsync(CurrentConfig.WebhookUrl, {
+            Body = game:GetService("HttpService"):JSONEncode(message),
+            Method = "POST",
+            Headers = {
+                ["Content-Type"] = "application/json"
+            }
+        })
+    end)
+end
+
+function CollectFruits(fruits)
+    for _, fruit in ipairs(fruits) do
+        if fruit.Object and fruit.Object.Parent then
+            -- Teleportar para a fruta
+            local char = LocalPlayer.Character
+            if char then
+                local root = char:FindFirstChild("HumanoidRootPart")
+                if root then
+                    root.CFrame = fruit.Object.CFrame + Vector3.new(0, 5, 0)
+                end
+            end
+        end
+    end
+end
+
+function StartAutoAFK()
+    spawn(function()
+        while AutoAfkEnabled do
+            StartServerHop()
+            task.wait(60) -- Espera 1 minuto entre verificações
+        end
+    end)
+end
+
+-- Inicialização principal
+LoadConfig()
+CreateCircle()
+CreateMainGUI()
+
+-- Atualizar ESP continuamente
+game:GetService("RunService").RenderStepped:Connect(function()
+    if EspEnabled then
+        pcall(UpdateEsp)
+    end
+end)
+
+print("Galaxy Hub Loaded Successfully!")
+print("Config saved at:", ConfigFileName)
