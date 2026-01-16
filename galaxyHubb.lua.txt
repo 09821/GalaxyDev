@@ -1,0 +1,1289 @@
+-- GalaxyHub - Blox Fruits Notifier System (FIXED VERSION)
+-- Complete Script with bug fixes
+
+local Players = game:GetService("Players")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
+local LocalPlayer = Players.LocalPlayer
+
+-- Configurações
+local Config = {
+    CircleImageId = "rbxassetid://0",
+    WebhookURL = "",
+    Whitelist = {},
+    Blacklist = {},
+    AutoTpServerWhitelist = true,
+    AutoOFFTPWhitelist = false,
+    AutoAFKEnabled = false,
+    ESPEnabled = false,
+    ServersFound = 0,
+    ServerLimit = 3
+}
+
+-- Lista ATUALIZADA de frutas com raridades
+local FruitData = {
+    -- COMMON
+    ["Rocket"] = "Common",
+    ["Spin"] = "Common",
+    ["Chop"] = "Common",
+    ["Spring"] = "Common",
+    ["Bomb"] = "Common",
+    ["Smoke"] = "Common",
+    ["Spike"] = "Common",
+    
+    -- UNCOMMON
+    ["Flame"] = "Uncommon",
+    ["Ice"] = "Uncommon",
+    ["Sand"] = "Uncommon",
+    ["Dark"] = "Uncommon",
+    ["Diamond"] = "Uncommon",
+    ["Light"] = "Uncommon",
+    ["Ghost"] = "Uncommon",
+    
+    -- RARE
+    ["Rubber"] = "Rare",
+    ["Barrier"] = "Rare",
+    ["Magma"] = "Rare",
+    ["Quake"] = "Rare",
+    ["Love"] = "Rare",
+    ["Spider"] = "Rare",
+    ["Sound"] = "Rare",
+    
+    -- LEGENDARY
+    ["Phoenix"] = "Legendary",
+    ["Portal"] = "Legendary",
+    ["Rumble"] = "Legendary",
+    ["Gravity"] = "Legendary",
+    ["Blizzard"] = "Legendary",
+    ["Eagle"] = "Legendary",
+    ["Creation"] = "Legendary",
+    ["Pain"] = "Legendary",
+    
+    -- MYTHICAL
+    ["Dough"] = "Mythical",
+    ["Shadow"] = "Mythical",
+    ["Venom"] = "Mythical",
+    ["Control"] = "Mythical",
+    ["Spirit"] = "Mythical",
+    ["Leopard"] = "Mythical",
+    ["Mammoth"] = "Mythical",
+    ["T-Rex"] = "Mythical",
+    ["Kitsune"] = "Mythical",
+    ["Dragon"] = "Mythical",
+    ["Gas"] = "Mythical",
+    ["Yeti"] = "Mythical",
+    ["Tiger"] = "Mythical",
+    ["Blade"] = "Mythical"
+}
+
+local RarityColors = {
+    Common = Color3.fromRGB(200, 200, 200),
+    Uncommon = Color3.fromRGB(85, 255, 85),
+    Rare = Color3.fromRGB(85, 170, 255),
+    Legendary = Color3.fromRGB(255, 170, 0),
+    Mythical = Color3.fromRGB(255, 85, 255)
+}
+
+-- Funções de salvamento
+local function SaveConfig()
+    local success, err = pcall(function()
+        if not isfolder("GalaxyHub") then
+            makefolder("GalaxyHub")
+        end
+        writefile("GalaxyHub/GalaxyHub_config.json", HttpService:JSONEncode(Config))
+    end)
+    if not success then
+        warn("Erro ao salvar configuração:", err)
+    end
+end
+
+local function LoadConfig()
+    local success, result = pcall(function()
+        if isfile("GalaxyHub/GalaxyHub_config.json") then
+            local data = readfile("GalaxyHub/GalaxyHub_config.json")
+            local decoded = HttpService:JSONDecode(data)
+            for k, v in pairs(decoded) do
+                Config[k] = v
+            end
+        end
+    end)
+    if not success then
+        warn("Erro ao carregar configuração:", result)
+    end
+end
+
+-- Detectar frutas no workspace (CORRIGIDO)
+local function GetFruitsInServer()
+    local fruits = {}
+    local success, result = pcall(function()
+        local worldOrigin = game.Workspace:FindFirstChild("_WorldOrigin")
+        if not worldOrigin then return {} end
+        
+        for _, obj in pairs(worldOrigin:GetDescendants()) do
+            if obj:IsA("Tool") then
+                -- Checar se o nome do Tool está na lista de frutas
+                local fruitName = obj.Name
+                if FruitData[fruitName] then
+                    table.insert(fruits, {
+                        Name = fruitName,
+                        Rarity = FruitData[fruitName],
+                        Object = obj
+                    })
+                end
+            end
+        end
+    end)
+    
+    if not success then
+        warn("Erro ao detectar frutas:", result)
+    end
+    
+    return fruits
+end
+
+-- Verificar se frutas estão na whitelist
+local function CheckWhitelist(fruits)
+    for _, fruit in pairs(fruits) do
+        for _, whitelistedFruit in pairs(Config.Whitelist) do
+            if fruit.Name == whitelistedFruit then
+                return true, fruits
+            end
+        end
+    end
+    return false, fruits
+end
+
+-- Verificar se frutas estão na blacklist
+local function CheckBlacklist(fruits)
+    for _, fruit in pairs(fruits) do
+        for _, blacklistedFruit in pairs(Config.Blacklist) do
+            if fruit.Name == blacklistedFruit then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+-- Enviar notificação para Discord
+local function SendDiscordWebhook(fruits)
+    if Config.WebhookURL == "" or Config.WebhookURL == nil then return end
+    
+    local success, err = pcall(function()
+        local jobId = game.JobId
+        local placeId = game.PlaceId
+        local playerCount = #Players:GetPlayers()
+        local fruitList = ""
+        
+        for _, fruit in pairs(fruits) do
+            fruitList = fruitList .. fruit.Name .. " (" .. fruit.Rarity .. ")\n"
+        end
+        
+        local pcLink = "https://www.roblox.com/games/start?placeId="..placeId.."&launchData="..jobId
+        
+        local embed = {
+            ["content"] = "@everyone",
+            ["embeds"] = {{
+                ["title"] = "🍎 Nova Fruta Encontrada!",
+                ["description"] = "**GalaxyScripts Radar detectou frutas!**",
+                ["color"] = 5814783,
+                ["fields"] = {
+                    {["name"] = "Job ID Mobile 📱", ["value"] = jobId, ["inline"] = false},
+                    {["name"] = "Job ID PC 💻", ["value"] = jobId, ["inline"] = false},
+                    {["name"] = "Players no Server 👤", ["value"] = tostring(playerCount), ["inline"] = false},
+                    {["name"] = "Link Job ID 💻📱🆔", ["value"] = "[Clique para o Server]("..pcLink..")", ["inline"] = false},
+                    {["name"] = "Data e Hora ⏳", ["value"] = os.date("%d/%m/%Y %H:%M:%S"), ["inline"] = false},
+                    {["name"] = "Fruit(s) 🍎📊", ["value"] = fruitList, ["inline"] = false}
+                },
+                ["footer"] = {["text"] = "GalaxyHub Notifier"}
+            }}
+        }
+        
+        local response = request({
+            Url = Config.WebhookURL,
+            Method = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body = HttpService:JSONEncode(embed)
+        })
+    end)
+    
+    if not success then
+        warn("Erro ao enviar webhook:", err)
+    end
+end
+
+-- Teleportar para fruta e coletar
+local function CollectFruit(fruit)
+    local success, err = pcall(function()
+        if not fruit.Object or not fruit.Object.Parent then return end
+        
+        local character = LocalPlayer.Character
+        if not character then return end
+        
+        local hrp = character:FindFirstChild("HumanoidRootPart")
+        if hrp and fruit.Object:FindFirstChild("Handle") then
+            -- Teleportar para fruta
+            hrp.CFrame = fruit.Object.Handle.CFrame + Vector3.new(0, 3, 0)
+            wait(0.3)
+            
+            -- Tentar equipar
+            if fruit.Object.Parent then
+                character.Humanoid:EquipTool(fruit.Object)
+            end
+        end
+    end)
+    
+    if not success then
+        warn("Erro ao coletar fruta:", err)
+    end
+end
+
+-- Server Hop (CORRIGIDO - Fix do bug de não carregar)
+local function ServerHop()
+    local success, err = pcall(function()
+        local placeId = game.PlaceId
+        
+        -- Método mais confiável de server hop
+        TeleportService:Teleport(placeId, LocalPlayer)
+    end)
+    
+    if not success then
+        warn("Erro ao trocar de servidor:", err)
+    end
+end
+
+-- ESP System
+local ESPObjects = {}
+
+local function CreateESP(fruit)
+    local success, esp = pcall(function()
+        if not fruit.Object or not fruit.Object:FindFirstChild("Handle") then return nil end
+        
+        local billboard = Instance.new("BillboardGui")
+        billboard.Name = "FruitESP_" .. fruit.Name
+        billboard.Adornee = fruit.Object.Handle
+        billboard.Size = UDim2.new(0, 100, 0, 50)
+        billboard.StudsOffset = Vector3.new(0, 3, 0)
+        billboard.AlwaysOnTop = true
+        billboard.Parent = CoreGui
+        
+        local frame = Instance.new("Frame", billboard)
+        frame.Size = UDim2.new(1, 0, 1, 0)
+        frame.BackgroundTransparency = 1
+        
+        local textLabel = Instance.new("TextLabel", frame)
+        textLabel.Size = UDim2.new(1, 0, 1, 0)
+        textLabel.BackgroundTransparency = 1
+        textLabel.Text = fruit.Name .. "\n[" .. fruit.Rarity .. "]"
+        textLabel.TextColor3 = RarityColors[fruit.Rarity] or Color3.fromRGB(255, 255, 255)
+        textLabel.TextStrokeTransparency = 0
+        textLabel.Font = Enum.Font.GothamBold
+        textLabel.TextScaled = true
+        
+        return billboard
+    end)
+    
+    if success and esp then
+        table.insert(ESPObjects, esp)
+        return esp
+    end
+    return nil
+end
+
+local function ClearESP()
+    for _, esp in pairs(ESPObjects) do
+        if esp then 
+            pcall(function() esp:Destroy() end)
+        end
+    end
+    ESPObjects = {}
+end
+
+local function UpdateESP()
+    ClearESP()
+    if not Config.ESPEnabled then return end
+    
+    local fruits = GetFruitsInServer()
+    for _, fruit in pairs(fruits) do
+        CreateESP(fruit)
+    end
+end
+
+-- Auto AFK System (MELHORADO)
+local autoAFKRunning = false
+local function AutoAFKLoop()
+    autoAFKRunning = true
+    
+    while Config.AutoAFKEnabled and autoAFKRunning do
+        local success, err = pcall(function()
+            local fruits = GetFruitsInServer()
+            local hasWhitelisted, allFruits = CheckWhitelist(fruits)
+            
+            if hasWhitelisted then
+                Config.ServersFound = Config.ServersFound + 1
+                
+                if Config.ServersFound <= Config.ServerLimit then
+                    -- Primeiros 3 servidores: apenas notifica
+                    SendDiscordWebhook(allFruits)
+                    wait(3)
+                    ServerHop()
+                else
+                    -- Próximos 3: coleta frutas
+                    SendDiscordWebhook(allFruits)
+                    
+                    for _, fruit in pairs(allFruits) do
+                        for _, whitelistedFruit in pairs(Config.Whitelist) do
+                            if fruit.Name == whitelistedFruit then
+                                CollectFruit(fruit)
+                                wait(1.5)
+                            end
+                        end
+                    end
+                    
+                    -- Aguarda 30 segundos antes de trocar de server
+                    wait(30)
+                    
+                    Config.ServersFound = Config.ServersFound + 1
+                    if Config.ServersFound >= Config.ServerLimit * 2 then
+                        Config.ServersFound = 0
+                    end
+                    
+                    ServerHop()
+                end
+            else
+                ServerHop()
+            end
+        end)
+        
+        if not success then
+            warn("Erro no Auto AFK Loop:", err)
+        end
+        
+        wait(5)
+    end
+    
+    autoAFKRunning = false
+end
+
+-- Criar UI
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "GalaxyHubUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = CoreGui
+
+-- Círculo Arrastável
+local Circle = Instance.new("ImageButton")
+Circle.Name = "CircleButton"
+Circle.Size = UDim2.new(0, 60, 0, 60)
+Circle.Position = UDim2.new(0.5, -30, 0.1, 0)
+Circle.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+Circle.Image = Config.CircleImageId
+Circle.Parent = ScreenGui
+
+local CircleCorner = Instance.new("UICorner")
+CircleCorner.CornerRadius = UDim.new(1, 0)
+CircleCorner.Parent = Circle
+
+-- Drag Circle
+local dragging, dragInput, dragStart, startPos
+Circle.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = Circle.Position
+        
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+Circle.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+game:GetService("UserInputService").InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        local delta = input.Position - dragStart
+        Circle.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+-- GUI Principal
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, 500, 0, 600)
+MainFrame.Position = UDim2.new(0.5, -250, 0.5, -300)
+MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+MainFrame.Visible = false
+MainFrame.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 12)
+MainCorner.Parent = MainFrame
+
+-- Drag Main GUI
+local dragMain, dragInputMain, dragStartMain, startPosMain
+MainFrame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragMain = true
+        dragStartMain = input.Position
+        startPosMain = MainFrame.Position
+        
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragMain = false
+            end
+        end)
+    end
+end)
+
+MainFrame.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInputMain = input
+    end
+end)
+
+game:GetService("UserInputService").InputChanged:Connect(function(input)
+    if input == dragInputMain and dragMain then
+        local delta = input.Position - dragStartMain
+        MainFrame.Position = UDim2.new(startPosMain.X.Scale, startPosMain.X.Offset + delta.X, startPosMain.Y.Scale, startPosMain.Y.Offset + delta.Y)
+    end
+end)
+
+-- Título
+local Title = Instance.new("TextLabel")
+Title.Name = "Title"
+Title.Size = UDim2.new(1, -100, 0, 40)
+Title.Position = UDim2.new(0, 0, 0, 0)
+Title.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+Title.Text = "Notifier Fruits"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 20
+Title.Parent = MainFrame
+
+local TitleCorner = Instance.new("UICorner")
+TitleCorner.CornerRadius = UDim.new(0, 12)
+TitleCorner.Parent = Title
+
+-- Botões de controle
+local CloseButton = Instance.new("TextButton")
+CloseButton.Name = "CloseButton"
+CloseButton.Size = UDim2.new(0, 30, 0, 30)
+CloseButton.Position = UDim2.new(1, -35, 0, 5)
+CloseButton.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+CloseButton.Text = "X"
+CloseButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+CloseButton.Font = Enum.Font.GothamBold
+CloseButton.TextSize = 16
+CloseButton.Parent = MainFrame
+
+local CloseCorner = Instance.new("UICorner")
+CloseCorner.CornerRadius = UDim.new(0, 6)
+CloseCorner.Parent = CloseButton
+
+local MinimizeButton = Instance.new("TextButton")
+MinimizeButton.Name = "MinimizeButton"
+MinimizeButton.Size = UDim2.new(0, 30, 0, 30)
+MinimizeButton.Position = UDim2.new(1, -70, 0, 5)
+MinimizeButton.BackgroundColor3 = Color3.fromRGB(255, 170, 0)
+MinimizeButton.Text = "-"
+MinimizeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+MinimizeButton.Font = Enum.Font.GothamBold
+MinimizeButton.TextSize = 20
+MinimizeButton.Parent = MainFrame
+
+local MinCorner = Instance.new("UICorner")
+MinCorner.CornerRadius = UDim.new(0, 6)
+MinCorner.Parent = MinimizeButton
+
+-- Container de Abas
+local TabContainer = Instance.new("Frame")
+TabContainer.Name = "TabContainer"
+TabContainer.Size = UDim2.new(1, -20, 1, -90)
+TabContainer.Position = UDim2.new(0, 10, 0, 50)
+TabContainer.BackgroundTransparency = 1
+TabContainer.Parent = MainFrame
+
+-- Botões de Abas
+local TabButtons = Instance.new("Frame")
+TabButtons.Name = "TabButtons"
+TabButtons.Size = UDim2.new(1, 0, 0, 35)
+TabButtons.Position = UDim2.new(0, 0, 0, 0)
+TabButtons.BackgroundTransparency = 1
+TabButtons.Parent = TabContainer
+
+local ServerHopTab = Instance.new("TextButton")
+ServerHopTab.Name = "ServerHopTab"
+ServerHopTab.Size = UDim2.new(0.48, 0, 1, 0)
+ServerHopTab.Position = UDim2.new(0, 0, 0, 0)
+ServerHopTab.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+ServerHopTab.Text = "Server Hop Fruits"
+ServerHopTab.TextColor3 = Color3.fromRGB(255, 255, 255)
+ServerHopTab.Font = Enum.Font.GothamBold
+ServerHopTab.TextSize = 14
+ServerHopTab.Parent = TabButtons
+
+local ServerTabCorner = Instance.new("UICorner")
+ServerTabCorner.CornerRadius = UDim.new(0, 8)
+ServerTabCorner.Parent = ServerHopTab
+
+local ESPTab = Instance.new("TextButton")
+ESPTab.Name = "ESPTab"
+ESPTab.Size = UDim2.new(0.48, 0, 1, 0)
+ESPTab.Position = UDim2.new(0.52, 0, 0, 0)
+ESPTab.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+ESPTab.Text = "ESP Fruits"
+ESPTab.TextColor3 = Color3.fromRGB(200, 200, 200)
+ESPTab.Font = Enum.Font.GothamBold
+ESPTab.TextSize = 14
+ESPTab.Parent = TabButtons
+
+local ESPTabCorner = Instance.new("UICorner")
+ESPTabCorner.CornerRadius = UDim.new(0, 8)
+ESPTabCorner.Parent = ESPTab
+
+-- Content Frames
+local ServerHopFrame = Instance.new("ScrollingFrame")
+ServerHopFrame.Name = "ServerHopFrame"
+ServerHopFrame.Size = UDim2.new(1, 0, 1, -45)
+ServerHopFrame.Position = UDim2.new(0, 0, 0, 45)
+ServerHopFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+ServerHopFrame.ScrollBarThickness = 6
+ServerHopFrame.Visible = true
+ServerHopFrame.Parent = TabContainer
+
+local ServerFrameCorner = Instance.new("UICorner")
+ServerFrameCorner.CornerRadius = UDim.new(0, 8)
+ServerFrameCorner.Parent = ServerHopFrame
+
+local ESPFrame = Instance.new("ScrollingFrame")
+ESPFrame.Name = "ESPFrame"
+ESPFrame.Size = UDim2.new(1, 0, 1, -45)
+ESPFrame.Position = UDim2.new(0, 0, 0, 45)
+ESPFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+ESPFrame.ScrollBarThickness = 6
+ESPFrame.Visible = false
+ESPFrame.Parent = TabContainer
+
+local ESPFrameCorner = Instance.new("UICorner")
+ESPFrameCorner.CornerRadius = UDim.new(0, 8)
+ESPFrameCorner.Parent = ESPFrame
+
+-- Layout para ServerHopFrame
+local ServerLayout = Instance.new("UIListLayout")
+ServerLayout.Padding = UDim.new(0, 10)
+ServerLayout.Parent = ServerHopFrame
+
+-- Whitelist Section
+local WhitelistLabel = Instance.new("TextLabel")
+WhitelistLabel.Size = UDim2.new(1, -20, 0, 30)
+WhitelistLabel.BackgroundTransparency = 1
+WhitelistLabel.Text = "🍎 Whitelist (Frutas para Detectar)"
+WhitelistLabel.TextColor3 = Color3.fromRGB(85, 255, 85)
+WhitelistLabel.Font = Enum.Font.GothamBold
+WhitelistLabel.TextSize = 14
+WhitelistLabel.TextXAlignment = Enum.TextXAlignment.Left
+WhitelistLabel.Parent = ServerHopFrame
+
+local WhitelistInput = Instance.new("Frame")
+WhitelistInput.Size = UDim2.new(1, -20, 0, 40)
+WhitelistInput.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+WhitelistInput.Parent = ServerHopFrame
+
+local WhitelistInputCorner = Instance.new("UICorner")
+WhitelistInputCorner.CornerRadius = UDim.new(0, 6)
+WhitelistInputCorner.Parent = WhitelistInput
+
+local WhitelistBox = Instance.new("TextBox")
+WhitelistBox.Size = UDim2.new(1, -50, 1, 0)
+WhitelistBox.Position = UDim2.new(0, 5, 0, 0)
+WhitelistBox.BackgroundTransparency = 1
+WhitelistBox.PlaceholderText = "Digite o nome da fruta..."
+WhitelistBox.Text = ""
+WhitelistBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+WhitelistBox.Font = Enum.Font.Gotham
+WhitelistBox.TextSize = 13
+WhitelistBox.TextXAlignment = Enum.TextXAlignment.Left
+WhitelistBox.Parent = WhitelistInput
+
+local WhitelistAdd = Instance.new("TextButton")
+WhitelistAdd.Size = UDim2.new(0, 35, 0, 30)
+WhitelistAdd.Position = UDim2.new(1, -40, 0, 5)
+WhitelistAdd.BackgroundColor3 = Color3.fromRGB(85, 255, 85)
+WhitelistAdd.Text = "+"
+WhitelistAdd.TextColor3 = Color3.fromRGB(0, 0, 0)
+WhitelistAdd.Font = Enum.Font.GothamBold
+WhitelistAdd.TextSize = 20
+WhitelistAdd.Parent = WhitelistInput
+
+local WhitelistAddCorner = Instance.new("UICorner")
+WhitelistAddCorner.CornerRadius = UDim.new(0, 6)
+WhitelistAddCorner.Parent = WhitelistAdd
+
+local WhitelistList = Instance.new("Frame")
+WhitelistList.Size = UDim2.new(1, -20, 0, 100)
+WhitelistList.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+WhitelistList.Parent = ServerHopFrame
+
+local WhitelistListCorner = Instance.new("UICorner")
+WhitelistListCorner.CornerRadius = UDim.new(0, 6)
+WhitelistListCorner.Parent = WhitelistList
+
+local WhitelistScroll = Instance.new("ScrollingFrame")
+WhitelistScroll.Size = UDim2.new(1, -10, 1, -10)
+WhitelistScroll.Position = UDim2.new(0, 5, 0, 5)
+WhitelistScroll.BackgroundTransparency = 1
+WhitelistScroll.ScrollBarThickness = 4
+WhitelistScroll.Parent = WhitelistList
+
+local WhitelistScrollLayout = Instance.new("UIListLayout")
+WhitelistScrollLayout.Padding = UDim.new(0, 5)
+WhitelistScrollLayout.Parent = WhitelistScroll
+
+-- Blacklist Section
+local BlacklistLabel = Instance.new("TextLabel")
+BlacklistLabel.Size = UDim2.new(1, -20, 0, 30)
+BlacklistLabel.BackgroundTransparency = 1
+BlacklistLabel.Text = "🚫 Blacklist (Frutas para Ignorar - Opcional)"
+BlacklistLabel.TextColor3 = Color3.fromRGB(255, 85, 85)
+BlacklistLabel.Font = Enum.Font.GothamBold
+BlacklistLabel.TextSize = 14
+BlacklistLabel.TextXAlignment = Enum.TextXAlignment.Left
+BlacklistLabel.Parent = ServerHopFrame
+
+local BlacklistInput = Instance.new("Frame")
+BlacklistInput.Size = UDim2.new(1, -20, 0, 40)
+BlacklistInput.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+BlacklistInput.Parent = ServerHopFrame
+
+local BlacklistInputCorner = Instance.new("UICorner")
+BlacklistInputCorner.CornerRadius = UDim.new(0, 6)
+BlacklistInputCorner.Parent = BlacklistInput
+
+local BlacklistBox = Instance.new("TextBox")
+BlacklistBox.Size = UDim2.new(1, -50, 1, 0)
+BlacklistBox.Position = UDim2.new(0, 5, 0, 0)
+BlacklistBox.BackgroundTransparency = 1
+BlacklistBox.PlaceholderText = "Digite o nome da fruta..."
+BlacklistBox.Text = ""
+BlacklistBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+BlacklistBox.Font = Enum.Font.Gotham
+BlacklistBox.TextSize = 13
+BlacklistBox.TextXAlignment = Enum.TextXAlignment.Left
+BlacklistBox.Parent = BlacklistInput
+
+local BlacklistAdd = Instance.new("TextButton")
+BlacklistAdd.Size = UDim2.new(0, 35, 0, 30)
+BlacklistAdd.Position = UDim2.new(1, -40, 0, 5)
+BlacklistAdd.BackgroundColor3 = Color3.fromRGB(255, 85, 85)
+BlacklistAdd.Text = "+"
+BlacklistAdd.TextColor3 = Color3.fromRGB(0, 0, 0)
+BlacklistAdd.Font = Enum.Font.GothamBold
+BlacklistAdd.TextSize = 20
+BlacklistAdd.Parent = BlacklistInput
+
+local BlacklistAddCorner = Instance.new("UICorner")
+BlacklistAddCorner.CornerRadius = UDim.new(0, 6)
+BlacklistAddCorner.Parent = BlacklistAdd
+
+local BlacklistList = Instance.new("Frame")
+BlacklistList.Size = UDim2.new(1, -20, 0, 100)
+BlacklistList.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+BlacklistList.Parent = ServerHopFrame
+
+local BlacklistListCorner = Instance.new("UICorner")
+BlacklistListCorner.CornerRadius = UDim.new(0, 6)
+BlacklistListCorner.Parent = BlacklistList
+
+local BlacklistScroll = Instance.new("ScrollingFrame")
+BlacklistScroll.Size = UDim2.new(1, -10, 1, -10)
+BlacklistScroll.Position = UDim2.new(0, 5, 0, 5)
+BlacklistScroll.BackgroundTransparency = 1
+BlacklistScroll.ScrollBarThickness = 4
+BlacklistScroll.Parent = BlacklistList
+
+local BlacklistScrollLayout = Instance.new("UIListLayout")
+BlacklistScrollLayout.Padding = UDim.new(0, 5)
+BlacklistScrollLayout.Parent = BlacklistScroll
+
+-- Botões de Controle
+local ControlsLabel = Instance.new("TextLabel")
+ControlsLabel.Size = UDim2.new(1, -20, 0, 30)
+ControlsLabel.BackgroundTransparency = 1
+ControlsLabel.Text = "⚙️ Controles"
+ControlsLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+ControlsLabel.Font = Enum.Font.GothamBold
+ControlsLabel.TextSize = 14
+ControlsLabel.TextXAlignment = Enum.TextXAlignment.Left
+ControlsLabel.Parent = ServerHopFrame
+
+local StartServerButton = Instance.new("TextButton")
+StartServerButton.Size = UDim2.new(1, -20, 0, 45)
+StartServerButton.BackgroundColor3 = Color3.fromRGB(85, 255, 85)
+StartServerButton.Text = "▶️ Start Server Hop"
+StartServerButton.TextColor3 = Color3.fromRGB(0, 0, 0)
+StartServerButton.Font = Enum.Font.GothamBold
+StartServerButton.TextSize = 16
+StartServerButton.Parent = ServerHopFrame
+
+local StartServerCorner = Instance.new("UICorner")
+StartServerCorner.CornerRadius = UDim.new(0, 8)
+StartServerCorner.Parent = StartServerButton
+
+-- Toggle AutoTp Server Whitelist
+local AutoTpFrame = Instance.new("Frame")
+AutoTpFrame.Size = UDim2.new(1, -20, 0, 50)
+AutoTpFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+AutoTpFrame.Parent = ServerHopFrame
+
+local AutoTpCorner = Instance.new("UICorner")
+AutoTpCorner.CornerRadius = UDim.new(0, 6)
+AutoTpCorner.Parent = AutoTpFrame
+
+local AutoTpLabel = Instance.new("TextLabel")
+AutoTpLabel.Size = UDim2.new(0.7, 0, 1, 0)
+AutoTpLabel.BackgroundTransparency = 1
+AutoTpLabel.Text = "  AutoTp Server Whitelist"
+AutoTpLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+AutoTpLabel.Font = Enum.Font.Gotham
+AutoTpLabel.TextSize = 13
+AutoTpLabel.TextXAlignment = Enum.TextXAlignment.Left
+AutoTpLabel.Parent = AutoTpFrame
+
+local AutoTpToggle = Instance.new("TextButton")
+AutoTpToggle.Size = UDim2.new(0, 60, 0, 30)
+AutoTpToggle.Position = UDim2.new(1, -70, 0.5, -15)
+AutoTpToggle.BackgroundColor3 = Color3.fromRGB(85, 255, 85)
+AutoTpToggle.Text = "ON"
+AutoTpToggle.TextColor3 = Color3.fromRGB(0, 0, 0)
+AutoTpToggle.Font = Enum.Font.GothamBold
+AutoTpToggle.TextSize = 14
+AutoTpToggle.Parent = AutoTpFrame
+
+local AutoTpToggleCorner = Instance.new("UICorner")
+AutoTpToggleCorner.CornerRadius = UDim.new(0, 6)
+AutoTpToggleCorner.Parent = AutoTpToggle
+
+-- Toggle AutoOFF TP Whitelist
+local AutoOffFrame = Instance.new("Frame")
+AutoOffFrame.Size = UDim2.new(1, -20, 0, 50)
+AutoOffFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+AutoOffFrame.Parent = ServerHopFrame
+
+local AutoOffCorner = Instance.new("UICorner")
+AutoOffCorner.CornerRadius = UDim.new(0, 6)
+AutoOffCorner.Parent = AutoOffFrame
+
+local AutoOffLabel = Instance.new("TextLabel")
+AutoOffLabel.Size = UDim2.new(0.7, 0, 1, 0)
+AutoOffLabel.BackgroundTransparency = 1
+AutoOffLabel.Text = "  AutoOFF_TP Whitelist"
+AutoOffLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+AutoOffLabel.Font = Enum.Font.Gotham
+AutoOffLabel.TextSize = 13
+AutoOffLabel.TextXAlignment = Enum.TextXAlignment.Left
+AutoOffLabel.Parent = AutoOffFrame
+
+local AutoOffToggle = Instance.new("TextButton")
+AutoOffToggle.Size = UDim2.new(0, 60, 0, 30)
+AutoOffToggle.Position = UDim2.new(1, -70, 0.5, -15)
+AutoOffToggle.BackgroundColor3 = Color3.fromRGB(255, 85, 85)
+AutoOffToggle.Text = "OFF"
+AutoOffToggle.TextColor3 = Color3.fromRGB(0, 0, 0)
+AutoOffToggle.Font = Enum.Font.GothamBold
+AutoOffToggle.TextSize = 14
+AutoOffToggle.Parent = AutoOffFrame
+
+local AutoOffToggleCorner = Instance.new("UICorner")
+AutoOffToggleCorner.CornerRadius = UDim.new(0, 6)
+AutoOffToggleCorner.Parent = AutoOffToggle
+
+-- Auto AFK Section
+local AutoAFKLabel = Instance.new("TextLabel")
+AutoAFKLabel.Size = UDim2.new(1, -20, 0, 30)
+AutoAFKLabel.BackgroundTransparency = 1
+AutoAFKLabel.Text = "🤖 Auto AFK System"
+AutoAFKLabel.TextColor3 = Color3.fromRGB(255, 170, 0)
+AutoAFKLabel.Font = Enum.Font.GothamBold
+AutoAFKLabel.TextSize = 14
+AutoAFKLabel.TextXAlignment = Enum.TextXAlignment.Left
+AutoAFKLabel.Parent = ServerHopFrame
+
+local AutoAFKFrame = Instance.new("Frame")
+AutoAFKFrame.Size = UDim2.new(1, -20, 0, 50)
+AutoAFKFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+AutoAFKFrame.Parent = ServerHopFrame
+
+local AutoAFKFrameCorner = Instance.new("UICorner")
+AutoAFKFrameCorner.CornerRadius = UDim.new(0, 6)
+AutoAFKFrameCorner.Parent = AutoAFKFrame
+
+local AutoAFKLabelText = Instance.new("TextLabel")
+AutoAFKLabelText.Size = UDim2.new(0.7, 0, 1, 0)
+AutoAFKLabelText.BackgroundTransparency = 1
+AutoAFKLabelText.Text = "  Auto AFK Mode"
+AutoAFKLabelText.TextColor3 = Color3.fromRGB(255, 255, 255)
+AutoAFKLabelText.Font = Enum.Font.Gotham
+AutoAFKLabelText.TextSize = 13
+AutoAFKLabelText.TextXAlignment = Enum.TextXAlignment.Left
+AutoAFKLabelText.Parent = AutoAFKFrame
+
+local AutoAFKToggle = Instance.new("TextButton")
+AutoAFKToggle.Size = UDim2.new(0, 60, 0, 30)
+AutoAFKToggle.Position = UDim2.new(1, -70, 0.5, -15)
+AutoAFKToggle.BackgroundColor3 = Color3.fromRGB(255, 85, 85)
+AutoAFKToggle.Text = "OFF"
+AutoAFKToggle.TextColor3 = Color3.fromRGB(0, 0, 0)
+AutoAFKToggle.Font = Enum.Font.GothamBold
+AutoAFKToggle.TextSize = 14
+AutoAFKToggle.Parent = AutoAFKFrame
+
+local AutoAFKToggleCorner = Instance.new("UICorner")
+AutoAFKToggleCorner.CornerRadius = UDim.new(0, 6)
+AutoAFKToggleCorner.Parent = AutoAFKToggle
+
+-- Webhook Input
+local WebhookLabel = Instance.new("TextLabel")
+WebhookLabel.Size = UDim2.new(1, -20, 0, 30)
+WebhookLabel.BackgroundTransparency = 1
+WebhookLabel.Text = "🔗 Discord Webhook URL"
+WebhookLabel.TextColor3 = Color3.fromRGB(114, 137, 218)
+WebhookLabel.Font = Enum.Font.GothamBold
+WebhookLabel.TextSize = 13
+WebhookLabel.TextXAlignment = Enum.TextXAlignment.Left
+WebhookLabel.Parent = ServerHopFrame
+
+local WebhookInput = Instance.new("Frame")
+WebhookInput.Size = UDim2.new(1, -20, 0, 40)
+WebhookInput.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+WebhookInput.Parent = ServerHopFrame
+
+local WebhookInputCorner = Instance.new("UICorner")
+WebhookInputCorner.CornerRadius = UDim.new(0, 6)
+WebhookInputCorner.Parent = WebhookInput
+
+local WebhookBox = Instance.new("TextBox")
+WebhookBox.Size = UDim2.new(1, -10, 1, 0)
+WebhookBox.Position = UDim2.new(0, 5, 0, 0)
+WebhookBox.BackgroundTransparency = 1
+WebhookBox.PlaceholderText = "Cole sua Webhook URL aqui..."
+WebhookBox.Text = Config.WebhookURL
+WebhookBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+WebhookBox.Font = Enum.Font.Gotham
+WebhookBox.TextSize = 12
+WebhookBox.TextXAlignment = Enum.TextXAlignment.Left
+WebhookBox.Parent = WebhookInput
+
+-- ESP Frame Content
+local ESPLayout = Instance.new("UIListLayout")
+ESPLayout.Padding = UDim.new(0, 10)
+ESPLayout.Parent = ESPFrame
+
+local ESPTitle = Instance.new("TextLabel")
+ESPTitle.Size = UDim2.new(1, -20, 0, 40)
+ESPTitle.BackgroundTransparency = 1
+ESPTitle.Text = "👁️ ESP Fruits System"
+ESPTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+ESPTitle.Font = Enum.Font.GothamBold
+ESPTitle.TextSize = 18
+ESPTitle.Parent = ESPFrame
+
+local ESPDescription = Instance.new("TextLabel")
+ESPDescription.Size = UDim2.new(1, -20, 0, 60)
+ESPDescription.BackgroundTransparency = 1
+ESPDescription.Text = "Ative o ESP para visualizar todas as frutas (Tools) no mapa com suas raridades em tempo real."
+ESPDescription.TextColor3 = Color3.fromRGB(200, 200, 200)
+ESPDescription.Font = Enum.Font.Gotham
+ESPDescription.TextSize = 13
+ESPDescription.TextWrapped = true
+ESPDescription.Parent = ESPFrame
+
+local ESPToggleFrame = Instance.new("Frame")
+ESPToggleFrame.Size = UDim2.new(1, -20, 0, 60)
+ESPToggleFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+ESPToggleFrame.Parent = ESPFrame
+
+local ESPToggleCorner = Instance.new("UICorner")
+ESPToggleCorner.CornerRadius = UDim.new(0, 8)
+ESPToggleCorner.Parent = ESPToggleFrame
+
+local ESPToggleLabel = Instance.new("TextLabel")
+ESPToggleLabel.Size = UDim2.new(0.6, 0, 1, 0)
+ESPToggleLabel.BackgroundTransparency = 1
+ESPToggleLabel.Text = "  ESP Fruits"
+ESPToggleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+ESPToggleLabel.Font = Enum.Font.GothamBold
+ESPToggleLabel.TextSize = 16
+ESPToggleLabel.TextXAlignment = Enum.TextXAlignment.Left
+ESPToggleLabel.Parent = ESPToggleFrame
+
+local ESPToggleButton = Instance.new("TextButton")
+ESPToggleButton.Size = UDim2.new(0, 80, 0, 40)
+ESPToggleButton.Position = UDim2.new(1, -90, 0.5, -20)
+ESPToggleButton.BackgroundColor3 = Color3.fromRGB(255, 85, 85)
+ESPToggleButton.Text = "OFF"
+ESPToggleButton.TextColor3 = Color3.fromRGB(0, 0, 0)
+ESPToggleButton.Font = Enum.Font.GothamBold
+ESPToggleButton.TextSize = 16
+ESPToggleButton.Parent = ESPToggleFrame
+
+local ESPToggleButtonCorner = Instance.new("UICorner")
+ESPToggleButtonCorner.CornerRadius = UDim.new(0, 8)
+ESPToggleButtonCorner.Parent = ESPToggleButton
+
+-- Legenda de Raridades
+local RarityLegend = Instance.new("Frame")
+RarityLegend.Size = UDim2.new(1, -20, 0, 200)
+RarityLegend.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+RarityLegend.Parent = ESPFrame
+
+local RarityLegendCorner = Instance.new("UICorner")
+RarityLegendCorner.CornerRadius = UDim.new(0, 8)
+RarityLegendCorner.Parent = RarityLegend
+
+local RarityTitle = Instance.new("TextLabel")
+RarityTitle.Size = UDim2.new(1, 0, 0, 30)
+RarityTitle.BackgroundTransparency = 1
+RarityTitle.Text = "Legenda de Raridades"
+RarityTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+RarityTitle.Font = Enum.Font.GothamBold
+RarityTitle.TextSize = 14
+RarityTitle.Parent = RarityLegend
+
+local rarities = {
+    {name = "Common", color = Color3.fromRGB(200, 200, 200)},
+    {name = "Uncommon", color = Color3.fromRGB(85, 255, 85)},
+    {name = "Rare", color = Color3.fromRGB(85, 170, 255)},
+    {name = "Legendary", color = Color3.fromRGB(255, 170, 0)},
+    {name = "Mythical", color = Color3.fromRGB(255, 85, 255)}
+}
+
+for i, rarity in ipairs(rarities) do
+    local rarityLabel = Instance.new("TextLabel")
+    rarityLabel.Size = UDim2.new(1, -20, 0, 25)
+    rarityLabel.Position = UDim2.new(0, 10, 0, 30 + (i * 30))
+    rarityLabel.BackgroundTransparency = 1
+    rarityLabel.Text = "■ " .. rarity.name
+    rarityLabel.TextColor3 = rarity.color
+    rarityLabel.Font = Enum.Font.GothamBold
+    rarityLabel.TextSize = 13
+    rarityLabel.TextXAlignment = Enum.TextXAlignment.Left
+    rarityLabel.Parent = RarityLegend
+end
+
+-- Funções de UI
+local function UpdateWhitelistDisplay()
+    for _, child in pairs(WhitelistScroll:GetChildren()) do
+        if child:IsA("Frame") then child:Destroy() end
+    end
+    
+    for i, fruitName in pairs(Config.Whitelist) do
+        local item = Instance.new("Frame")
+        item.Size = UDim2.new(1, -10, 0, 30)
+        item.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+        item.Parent = WhitelistScroll
+        
+        local itemCorner = Instance.new("UICorner")
+        itemCorner.CornerRadius = UDim.new(0, 4)
+        itemCorner.Parent = item
+        
+        local itemLabel = Instance.new("TextLabel")
+        itemLabel.Size = UDim2.new(1, -40, 1, 0)
+        itemLabel.Position = UDim2.new(0, 5, 0, 0)
+        itemLabel.BackgroundTransparency = 1
+        itemLabel.Text = fruitName
+        itemLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        itemLabel.Font = Enum.Font.Gotham
+        itemLabel.TextSize = 12
+        itemLabel.TextXAlignment = Enum.TextXAlignment.Left
+        itemLabel.Parent = item
+        
+        local removeBtn = Instance.new("TextButton")
+        removeBtn.Size = UDim2.new(0, 25, 0, 25)
+        removeBtn.Position = UDim2.new(1, -30, 0, 2.5)
+        removeBtn.BackgroundColor3 = Color3.fromRGB(255, 85, 85)
+        removeBtn.Text = "X"
+        removeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        removeBtn.Font = Enum.Font.GothamBold
+        removeBtn.TextSize = 12
+        removeBtn.Parent = item
+        
+        local removeBtnCorner = Instance.new("UICorner")
+        removeBtnCorner.CornerRadius = UDim.new(0, 4)
+        removeBtnCorner.Parent = removeBtn
+        
+        removeBtn.MouseButton1Click:Connect(function()
+            table.remove(Config.Whitelist, i)
+            SaveConfig()
+            UpdateWhitelistDisplay()
+        end)
+    end
+    
+    WhitelistScroll.CanvasSize = UDim2.new(0, 0, 0, WhitelistScrollLayout.AbsoluteContentSize.Y)
+end
+
+local function UpdateBlacklistDisplay()
+    for _, child in pairs(BlacklistScroll:GetChildren()) do
+        if child:IsA("Frame") then child:Destroy() end
+    end
+    
+    for i, fruitName in pairs(Config.Blacklist) do
+        local item = Instance.new("Frame")
+        item.Size = UDim2.new(1, -10, 0, 30)
+        item.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+        item.Parent = BlacklistScroll
+        
+        local itemCorner = Instance.new("UICorner")
+        itemCorner.CornerRadius = UDim.new(0, 4)
+        itemCorner.Parent = item
+        
+        local itemLabel = Instance.new("TextLabel")
+        itemLabel.Size = UDim2.new(1, -40, 1, 0)
+        itemLabel.Position = UDim2.new(0, 5, 0, 0)
+        itemLabel.BackgroundTransparency = 1
+        itemLabel.Text = fruitName
+        itemLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        itemLabel.Font = Enum.Font.Gotham
+        itemLabel.TextSize = 12
+        itemLabel.TextXAlignment = Enum.TextXAlignment.Left
+        itemLabel.Parent = item
+        
+        local removeBtn = Instance.new("TextButton")
+        removeBtn.Size = UDim2.new(0, 25, 0, 25)
+        removeBtn.Position = UDim2.new(1, -30, 0, 2.5)
+        removeBtn.BackgroundColor3 = Color3.fromRGB(255, 85, 85)
+        removeBtn.Text = "X"
+        removeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+        removeBtn.Font = Enum.Font.GothamBold
+        removeBtn.TextSize = 12
+        removeBtn.Parent = item
+        
+        local removeBtnCorner = Instance.new("UICorner")
+        removeBtnCorner.CornerRadius = UDim.new(0, 4)
+        removeBtnCorner.Parent = removeBtn
+        
+        removeBtn.MouseButton1Click:Connect(function()
+            table.remove(Config.Blacklist, i)
+            SaveConfig()
+            UpdateBlacklistDisplay()
+        end)
+    end
+    
+    BlacklistScroll.CanvasSize = UDim2.new(0, 0, 0, BlacklistScrollLayout.AbsoluteContentSize.Y)
+end
+
+-- Event Handlers
+Circle.MouseButton1Click:Connect(function()
+    MainFrame.Visible = not MainFrame.Visible
+end)
+
+CloseButton.MouseButton1Click:Connect(function()
+    MainFrame.Visible = false
+end)
+
+local isMinimized = false
+MinimizeButton.MouseButton1Click:Connect(function()
+    isMinimized = not isMinimized
+    if isMinimized then
+        MainFrame.Size = UDim2.new(0, 500, 0, 40)
+        TabContainer.Visible = false
+        MinimizeButton.Text = "+"
+    else
+        MainFrame.Size = UDim2.new(0, 500, 0, 600)
+        TabContainer.Visible = true
+        MinimizeButton.Text = "-"
+    end
+end)
+
+ServerHopTab.MouseButton1Click:Connect(function()
+    ServerHopFrame.Visible = true
+    ESPFrame.Visible = false
+    ServerHopTab.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+    ESPTab.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    ServerHopTab.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ESPTab.TextColor3 = Color3.fromRGB(200, 200, 200)
+end)
+
+ESPTab.MouseButton1Click:Connect(function()
+    ServerHopFrame.Visible = false
+    ESPFrame.Visible = true
+    ServerHopTab.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+    ESPTab.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+    ServerHopTab.TextColor3 = Color3.fromRGB(200, 200, 200)
+    ESPTab.TextColor3 = Color3.fromRGB(255, 255, 255)
+end)
+
+WhitelistAdd.MouseButton1Click:Connect(function()
+    local text = WhitelistBox.Text:gsub("^%s*(.-)%s*$", "%1")
+    if text ~= "" and FruitData[text] then
+        local exists = false
+        for _, v in pairs(Config.Whitelist) do
+            if v == text then exists = true break end
+        end
+        if not exists then
+            table.insert(Config.Whitelist, text)
+            SaveConfig()
+            UpdateWhitelistDisplay()
+            WhitelistBox.Text = ""
+        end
+    end
+end)
+
+BlacklistAdd.MouseButton1Click:Connect(function()
+    local text = BlacklistBox.Text:gsub("^%s*(.-)%s*$", "%1")
+    if text ~= "" and FruitData[text] then
+        local exists = false
+        for _, v in pairs(Config.Blacklist) do
+            if v == text then exists = true break end
+        end
+        if not exists then
+            table.insert(Config.Blacklist, text)
+            SaveConfig()
+            UpdateBlacklistDisplay()
+            BlacklistBox.Text = ""
+        end
+    end
+end)
+
+local serverHopActive = false
+StartServerButton.MouseButton1Click:Connect(function()
+    if #Config.Whitelist == 0 then
+        return
+    end
+    
+    serverHopActive = not serverHopActive
+    if serverHopActive then
+        StartServerButton.BackgroundColor3 = Color3.fromRGB(255, 85, 85)
+        StartServerButton.Text = "⏸️ Stop Server Hop"
+        
+        spawn(function()
+            while serverHopActive do
+                local fruits = GetFruitsInServer()
+                local hasWhitelisted = CheckWhitelist(fruits)
+                local hasBlacklisted = CheckBlacklist(fruits)
+                
+                if Config.AutoTpServerWhitelist and hasBlacklisted then
+                    ServerHop()
+                elseif hasWhitelisted and not Config.AutoOFFTPWhitelist then
+                    wait(2)
+                elseif not hasWhitelisted then
+                    ServerHop()
+                end
+                
+                wait(5)
+            end
+        end)
+    else
+        StartServerButton.BackgroundColor3 = Color3.fromRGB(85, 255, 85)
+        StartServerButton.Text = "▶️ Start Server Hop"
+    end
+end)
+
+AutoTpToggle.MouseButton1Click:Connect(function()
+    Config.AutoTpServerWhitelist = not Config.AutoTpServerWhitelist
+    SaveConfig()
+    
+    if Config.AutoTpServerWhitelist then
+        AutoTpToggle.BackgroundColor3 = Color3.fromRGB(85, 255, 85)
+        AutoTpToggle.Text = "ON"
+    else
+        AutoTpToggle.BackgroundColor3 = Color3.fromRGB(255, 85, 85)
+        AutoTpToggle.Text = "OFF"
+    end
+end)
+
+AutoOffToggle.MouseButton1Click:Connect(function()
+    Config.AutoOFFTPWhitelist = not Config.AutoOFFTPWhitelist
+    SaveConfig()
+    
+    if Config.AutoOFFTPWhitelist then
+        AutoOffToggle.BackgroundColor3 = Color3.fromRGB(85, 255, 85)
+        AutoOffToggle.Text = "ON"
+    else
+        AutoOffToggle.BackgroundColor3 = Color3.fromRGB(255, 85, 85)
+        AutoOffToggle.Text = "OFF"
+    end
+end)
+
+AutoAFKToggle.MouseButton1Click:Connect(function()
+    Config.AutoAFKEnabled = not Config.AutoAFKEnabled
+    SaveConfig()
+    
+    if Config.AutoAFKEnabled then
+        AutoAFKToggle.BackgroundColor3 = Color3.fromRGB(85, 255, 85)
+        AutoAFKToggle.Text = "ON"
+        spawn(AutoAFKLoop)
+    else
+        AutoAFKToggle.BackgroundColor3 = Color3.fromRGB(255, 85, 85)
+        AutoAFKToggle.Text = "OFF"
+        autoAFKRunning = false
+    end
+end)
+
+WebhookBox.FocusLost:Connect(function()
+    Config.WebhookURL = WebhookBox.Text
+    SaveConfig()
+end)
+
+ESPToggleButton.MouseButton1Click:Connect(function()
+    Config.ESPEnabled = not Config.ESPEnabled
+    SaveConfig()
+    
+    if Config.ESPEnabled then
+        ESPToggleButton.BackgroundColor3 = Color3.fromRGB(85, 255, 85)
+        ESPToggleButton.Text = "ON"
+        UpdateESP()
+    else
+        ESPToggleButton.BackgroundColor3 = Color3.fromRGB(255, 85, 85)
+        ESPToggleButton.Text = "OFF"
+        ClearESP()
+    end
+end)
+
+-- Auto-update ESP
+spawn(function()
+    while true do
+        if Config.ESPEnabled then
+            UpdateESP()
+        end
+        wait(3)
+    end
+end)
+
+-- Canvas Size Updates
+spawn(function()
+    while true do
+        ServerHopFrame.CanvasSize = UDim2.new(0, 0, 0, ServerLayout.AbsoluteContentSize.Y + 20)
+        ESPFrame.CanvasSize = UDim2.new(0, 0, 0, ESPLayout.AbsoluteContentSize.Y + 20)
+        wait(0.5)
+    end
+end)
+
+-- Inicialização
+LoadConfig()
+UpdateWhitelistDisplay()
+UpdateBlacklistDisplay()
+
+-- Aplicar configurações salvas
+if Config.AutoTpServerWhitelist then
+    AutoTpToggle.BackgroundColor3 = Color3.fromRGB(85, 255, 85)
+    AutoTpToggle.Text = "ON"
+end
+
+if Config.AutoOFFTPWhitelist then
+    AutoOffToggle.BackgroundColor3 = Color3.fromRGB(85, 255, 85)
+    AutoOffToggle.Text = "ON"
+end
+
+print("✅ GalaxyHub - Blox Fruits Notifier carregado com sucesso!")
+print("🔧 Lista de frutas atualizada!")
+print("🐛 Bugs corrigidos: Server hop + ESP de Tools")
+print("❤️ Criado by GalaxyScripts")
